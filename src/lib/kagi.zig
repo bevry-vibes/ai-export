@@ -134,11 +134,13 @@ pub fn collectKagi(a: std.mem.Allocator, io: std.Io, env: *const std.process.Env
     // The client repo documents per-conversation endpoints; enumerate through
     // the list endpoint, trying the known spellings.
     var conversations: []const std.json.Value = &.{};
-    const list_paths = [_][]const u8{ "/conversations?limit=100", "/conversations", "/conversations/list" };
+    // The web app's own init payload carries the first page of conversations.
+    const list_paths = [_][]const u8{ "/init", "/conversations?limit=100", "/conversations", "/conversations/list" };
     for (list_paths) |path| {
         const bytes = fetch.get(path) catch continue;
         const value = parse(a, bytes) orelse continue;
-        const rows = itemsOf(value, "conversations");
+        var rows = itemsOf(value, "conversations");
+        if (rows.len == 0) rows = nestedItems(value, "conversations", "items");
         if (rows.len > 0) {
             conversations = rows;
             break;
