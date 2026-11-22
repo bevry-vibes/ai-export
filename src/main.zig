@@ -12,6 +12,9 @@ const readers = @import("lib/readers.zig");
 const render = @import("lib/render.zig");
 const model = @import("lib/model.zig");
 const normalize = @import("lib/normalize.zig");
+const archives = @import("lib/archives.zig");
+const dedupe = @import("lib/dedupe.zig");
+const kagi = @import("lib/kagi.zig");
 
 pub const usage =
     \\ai-export — export harness chats to Markdown and JSON files
@@ -22,6 +25,9 @@ pub const usage =
     \\options:
     \\  --output=<dir>     output directory (default: ~/Documents/AI)
     \\  --harness=<id>     export only one harness (opencode, kilo, cline, dsh, zcode, ...)
+    \\  --archive=<path>   ingest an external export (repeatable)
+    \\  --kagi             fetch Kagi Assistant chats (needs KAGI_SESSION)
+    \\  --kagi-share=<id>  fetch one public Kagi share
     \\  --dry-run          discover and report, write nothing
     \\  --version          print the version
     \\  --help             show this help
@@ -57,6 +63,9 @@ fn mainInner(init: std.process.Init) !u8 {
     var output: []const u8 = "";
     var only: []const u8 = "";
     var dry_run = false;
+    var want_kagi = false;
+    var archive_paths: std.ArrayList([]const u8) = .empty;
+    var share_ids: std.ArrayList([]const u8) = .empty;
     var args = std.process.Args.Iterator.initAllocator(init.minimal.args, a) catch return 1;
     defer args.deinit();
     _ = args.skip();
@@ -68,12 +77,18 @@ fn mainInner(init: std.process.Init) !u8 {
             writeOut(io, build_options.version);
             writeOut(io, "\n");
             return 0;
+        } else if (std.mem.eql(u8, arg, "--kagi")) {
+            want_kagi = true;
+        } else if (std.mem.startsWith(u8, arg, "--kagi-share=")) {
+            try share_ids.append(a, arg["--kagi-share=".len..]);
         } else if (std.mem.eql(u8, arg, "--dry-run")) {
             dry_run = true;
         } else if (std.mem.startsWith(u8, arg, "--output=")) {
             output = arg["--output=".len..];
         } else if (std.mem.startsWith(u8, arg, "--harness=")) {
             only = arg["--harness=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--archive=")) {
+            try archive_paths.append(a, arg["--archive=".len..]);
         } else {
             writeErr(io, "unrecognised argument: ");
             writeErr(io, arg);
@@ -100,16 +115,44 @@ fn mainInner(init: std.process.Init) !u8 {
         }
     };
 
+    if (want_kagi) {
+        kagi.collectKagi(a, io, env, &sessions, &stats) catch |err| {
+            writeErr(io, "kagi fetch failed: ");
+            writeErr(io, @errorName(err));
+            writeErr(io, "\n");
+        };
+    }
+    for (share_ids.items) |id| {
+        kagi.collectShare(a, io, id, &sessions, &stats) catch |err| {
+            writeErr(io, "kagi share failed: ");
+            writeErr(io, @errorName(err));
+            writeErr(io, "\n");
+        };
+    }
+
+    var report = dedupe.Result{};
+    if (archive_paths.items.len > 0 or want_kagi or share_ids.items.len > 0) {
+        const catalog_root = try std.fs.path.join(a, &.{ output, "exports" });
+        if (!dry_run) try std.Io.Dir.cwd().createDirPath(io, catalog_root);
+        archives.collectArchives(a, io, archive_paths.items, &sessions, &stats, catalog_root) catch |err| {
+            writeErr(io, "archive ingest failed: ");
+            writeErr(io, @errorName(err));
+            writeErr(io, "\n");
+        };
+        report = try dedupe.process(a, &sessions);
+    }
+
     var writer = if (dry_run) null else try render.Writer.init(a, io, output);
     for (sessions.items) |session| {
         if (writer) |*w| {
-            _ = try w.writeSession(session);
+            try w.writeSession(session);
         }
     }
+    if (writer != null) try dedupe.writeReports(a, io, output, report);
 
     const summary = try std.fmt.allocPrint(a,
-        "scanned: {d} sessions · exported: {d} · skipped: {d} · failed: {d} · attachments: {d}\noutput: {s}\n",
-        .{ stats.scanned, if (writer) |w| w.written else 0, stats.skipped, stats.failed, if (writer) |w| w.attachment_count else 0, output },
+        "scanned: {d} sessions · exported: {d} · skipped: {d} · failed: {d} · attachments: {d} · collapsed: {d} · merged: {d} · cross-harness duplicates: {d} · conflicts: {d}\noutput: {s}\n",
+        .{ stats.scanned, if (writer) |w| w.written else 0, stats.skipped, stats.failed, if (writer) |w| w.attachment_count else 0, report.collapsed, report.merged, report.duplicates.len, report.conflicts.len, output },
     );
     writeOut(io, summary);
     return 0;

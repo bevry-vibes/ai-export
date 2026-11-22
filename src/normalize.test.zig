@@ -10,6 +10,7 @@ const std = @import("std");
 const testing = std.testing;
 const model = @import("lib/model.zig");
 const normalize = @import("lib/normalize.zig");
+const dedupe = @import("lib/dedupe.zig");
 
 fn parse(a: std.mem.Allocator, bytes: []const u8) !std.json.Value {
     const parsed = try std.json.parseFromSlice(std.json.Value, a, bytes, .{});
@@ -45,6 +46,27 @@ test "shortId is stable and fixed width" {
     const one = try model.shortId(a, "session-123");
     try testing.expectEqual(@as(usize, 8), one.len);
     try testing.expectEqualStrings(one, try model.shortId(a, "session-123"));
+}
+
+test "dedupe collapses exact within-harness copies and reports cross-harness copies" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const msgs = [_]model.Message{
+        .{ .role = "user", .content = "one two three four" },
+        .{ .role = "assistant", .content = "answer one" },
+        .{ .role = "user", .content = "five six seven eight" },
+        .{ .role = "assistant", .content = "answer two" },
+    };
+    var sessions: std.ArrayList(model.Session) = .empty;
+    try sessions.append(a, .{ .id = "a", .harness = "claude", .title = "Chat", .stamp = "2026-01-01 00-00", .source_path = "a", .messages = &msgs });
+    try sessions.append(a, .{ .id = "a", .harness = "claude", .title = "Chat", .stamp = "2026-01-01 00-00", .source_path = "a2", .messages = &msgs });
+    try sessions.append(a, .{ .id = "b", .harness = "chatgpt", .title = "Chat", .stamp = "2026-01-01 00-00", .source_path = "b", .messages = &msgs });
+    const result = try dedupe.process(a, &sessions);
+    try testing.expectEqual(@as(usize, 2), sessions.items.len);
+    try testing.expectEqual(@as(usize, 1), result.collapsed);
+    try testing.expectEqual(@as(usize, 1), result.duplicates.len);
+    try testing.expectEqualStrings("exact", result.duplicates[0].kind);
 }
 
 test "collectMessages reads role and content pairs" {

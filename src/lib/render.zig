@@ -58,24 +58,25 @@ pub const Writer = struct {
                                 }
                             },
                             .directory => {
-                                if (std.mem.eql(u8, child.name, "attachments")) std.Io.Dir.cwd().deleteTree(self.io, child_path) catch {};
+                                if (std.mem.eql(u8, child.name, "attachments") or std.mem.eql(u8, child.name, "json")) {
+                                    std.Io.Dir.cwd().deleteTree(self.io, child_path) catch {};
+                                }
                             },
                             else => {},
                         }
                     }
                     harness_dir.close(self.io);
+                    std.Io.Dir.cwd().deleteDir(self.io, path) catch {};
                 },
                 else => {},
             }
         }
     }
 
-    fn harnessDir(self: *Writer, harness: []const u8) !struct { root: []const u8, attachments: []const u8 } {
-        const a = self.allocator;
-        const root = try std.fs.path.join(a, &.{ self.output, harness });
-        const attachments = try std.fs.path.join(a, &.{ root, "attachments" });
-        try std.Io.Dir.cwd().createDirPath(self.io, attachments);
-        return .{ .root = root, .attachments = attachments };
+    fn harnessDir(self: *Writer, harness: []const u8) ![]const u8 {
+        const root = try std.fs.path.join(self.allocator, &.{ self.output, harness });
+        try std.Io.Dir.cwd().createDirPath(self.io, root);
+        return root;
     }
 
     fn base(self: *Writer, session: Session) ![]const u8 {
@@ -151,10 +152,11 @@ pub const Writer = struct {
         return std.json.Stringify.valueAlloc(a, doc, .{ .whitespace = .indent_2 });
     }
 
-    fn copyAttachments(self: *Writer, session: Session, dir: []const u8) ![][]const u8 {
+    fn copyAttachments(self: *Writer, session: Session, root: []const u8) ![][]const u8 {
         const a = self.allocator;
         const short = try model.shortId(a, session.id);
         var outputs: std.ArrayList([]const u8) = .empty;
+        var attachments_dir: ?[]const u8 = null;
         for (session.attachments) |att| {
             const source = att.source_path;
             if (source.len == 0) continue;
@@ -165,7 +167,12 @@ pub const Writer = struct {
             if (std.Io.Dir.cwd().statFile(self.io, resolved, .{})) |_| {} else |_| continue;
             const att_title = try model.humanTitle(a, std.fs.path.stem(att.title));
             const name = try std.fmt.allocPrint(a, "{s} - {s} - {s}.{s}", .{ session.stamp, short, att_title, att.extension });
-            const dest = try std.fs.path.join(a, &.{ dir, name });
+            if (attachments_dir == null) {
+                const dir = try std.fs.path.join(a, &.{ root, "attachments" });
+                try std.Io.Dir.cwd().createDirPath(self.io, dir);
+                attachments_dir = dir;
+            }
+            const dest = try std.fs.path.join(a, &.{ attachments_dir.?, name });
             std.Io.Dir.cwd().copyFile(resolved, std.Io.Dir.cwd(), dest, self.io, .{}) catch continue;
             try outputs.append(a, dest);
             self.attachment_count += 1;
@@ -175,13 +182,15 @@ pub const Writer = struct {
 
     pub fn writeSession(self: *Writer, session: Session) !void {
         const a = self.allocator;
-        const dirs = try self.harnessDir(session.harness);
+        const root = try self.harnessDir(session.harness);
+        const json_dir = try std.fs.path.join(a, &.{ root, "json" });
+        try std.Io.Dir.cwd().createDirPath(self.io, json_dir);
         const stem = try self.base(session);
-        const outputs = try self.copyAttachments(session, dirs.attachments);
+        const outputs = try self.copyAttachments(session, root);
         const md = try self.markdown(session);
         const doc = try self.jsonDocument(session, outputs);
-        const md_path = try std.fmt.allocPrint(a, "{s}/{s}.md", .{ dirs.root, stem });
-        const json_path = try std.fmt.allocPrint(a, "{s}/{s}.json", .{ dirs.root, stem });
+        const md_path = try std.fmt.allocPrint(a, "{s}/{s}.md", .{ root, stem });
+        const json_path = try std.fmt.allocPrint(a, "{s}/{s}.json", .{ json_dir, stem });
         try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = md_path, .data = md });
         try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = json_path, .data = doc });
         self.written += 1;

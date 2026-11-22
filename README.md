@@ -25,7 +25,7 @@ Harness discovery follows [agent-detect](https://github.com/bevry-vibes/agent-de
 ./zig-out/bin/ai-export --version
 ```
 
-Options: `--output=<dir>` changes the destination; `--harness=<id>` limits the run to one harness; `--dry-run` reports without writing; `--help` prints all options.
+Options: `--output=<dir>` changes the destination; `--harness=<id>` limits the run to one harness; `--archive=<path>` ingests an external export (repeatable); `--kagi` fetches Kagi Assistant chats using the `KAGI_SESSION` cookie from the environment; `--kagi-share=<id>` fetches one public Kagi share; `--dry-run` reports without writing; `--help` prints all options.
 
 Every run is a full regeneration. Previous exports under the chosen output directory are wiped first, so a format change never leaves two generations of files side by side.
 
@@ -35,8 +35,9 @@ Every run is a full regeneration. Previous exports under the chosen output direc
 ~/Documents/AI/
 ├── opencode/
 │   ├── 2026-08-13 20-11 - 7858be5c - Fixtures to JSON top weekly programming models.md
-│   ├── 2026-08-13 20-11 - 7858be5c - Fixtures to JSON top weekly programming models.json
-│   └── attachments/
+│   ├── json/
+│   │   └── 2026-08-13 20-11 - 7858be5c - Fixtures to JSON top weekly programming models.json
+│   └── attachments/          (created only when there are attachments)
 │       └── 2026-08-13 20-11 - 7858be5c - Screenshot.png
 ├── cline/
 ├── kilo/
@@ -58,6 +59,14 @@ The `.md` file holds only `### Prompt` and `### Answer` turns. The `.json` file 
 Adding a store is a table row in `src/lib/readers.zig`. Message-shape differences are handled in `src/lib/normalize.zig`, which folds strings, block arrays, nested `message`/`payload`/`request` objects, and `user`/`assistant`/`agent` role spellings into one shape.
 
 Not covered yet: Claude Desktop's IndexedDB LevelDB store, Codex's secondary SQLite mirrors (the JSONL rollouts are used instead), Copilot CLI's empty-window JSONL, and harnesses with no local transcript such as Zed on this machine.
+
+## Safety
+
+## Archives and duplicates
+
+External archives (TypingMind JSON, Claude conversation exports, ChatGPT/OpenAI zip exports) are ingested with `--archive`; zip files are read in place and only their extracted contents are catalogued under `<output>/exports/<timestamp> - <harness>/`. Source archives are copied, never moved or deleted.
+
+Within a harness, exact copies collapse and an older transcript that is contained in a longer one is merged away; conflicting copies are listed in `<output>/conflicts.json`. Between harnesses, copies are **never** merged — `<output>/duplicates.json` records each pair as `exact`, `extended`, or `variant`, with the harnesses, titles, ids, and how many extra messages one side has.
 
 ## Safety
 

@@ -72,6 +72,9 @@ pub fn collectMessages(a: std.mem.Allocator, value: std.json.Value, out: *std.Ar
                 if (model.jstr(obj, "type")) |raw| role = roleOf(raw);
             }
             if (role == null) {
+                if (model.jstr(obj, "sender")) |raw| role = roleOf(raw);
+            }
+            if (role == null) {
                 if (obj.get("payload")) |payload| {
                     if (payload == .object) {
                         if (model.jstr(payload.object, "type")) |raw| role = roleOf(raw);
@@ -92,7 +95,7 @@ pub fn collectMessages(a: std.mem.Allocator, value: std.json.Value, out: *std.Ar
                 }
             }
             // transcript envelopes hold messages under these keys
-            const keys = [_][]const u8{ "messages", "records", "data", "payload", "session", "conversation", "chat", "thread", "message", "request", "response", "body" };
+            const keys = [_][]const u8{ "messages", "chat_messages", "records", "data", "payload", "session", "conversation", "chat", "thread", "message", "request", "response", "body" };
             for (keys) |key| {
                 if (obj.get(key)) |item| try collectMessages(a, item, out, depth + 1);
             }
