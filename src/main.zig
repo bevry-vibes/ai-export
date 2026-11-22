@@ -134,7 +134,7 @@ fn mainInner(init: std.process.Init) !u8 {
     if (archive_paths.items.len > 0 or want_kagi or share_ids.items.len > 0) {
         const catalog_root = try std.fs.path.join(a, &.{ output, "exports" });
         if (!dry_run) try std.Io.Dir.cwd().createDirPath(io, catalog_root);
-        archives.collectArchives(a, io, archive_paths.items, &sessions, &stats, catalog_root) catch |err| {
+        archives.collectArchives(a, io, archive_paths.items, &sessions, &stats, catalog_root, !dry_run) catch |err| {
             writeErr(io, "archive ingest failed: ");
             writeErr(io, @errorName(err));
             writeErr(io, "\n");

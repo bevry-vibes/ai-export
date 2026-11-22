@@ -202,6 +202,26 @@ fn writeExtracted(a: std.mem.Allocator, io: std.Io, catalog_root: []const u8, ha
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = dest, .data = bytes }) catch {};
 }
 
+fn trashZip(a: std.mem.Allocator, io: std.Io, path: []const u8) void {
+    _ = runCapture(a, io, &.{ "/usr/bin/trash", "-s", path }) catch return;
+}
+
+fn trashZipsUnder(a: std.mem.Allocator, io: std.Io, root: []const u8) void {
+    var dir = std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        const path = std.fmt.allocPrint(a, "{s}/{s}", .{ root, entry.name }) catch continue;
+        switch (entry.kind) {
+            .directory => trashZipsUnder(a, io, path),
+            .file => {
+                if (std.mem.endsWith(u8, entry.name, ".zip")) trashZip(a, io, path);
+            },
+            else => {},
+        }
+    }
+}
+
 fn harnessForPath(path: []const u8) []const u8 {
     if (std.mem.indexOf(u8, path, "claude-memory") != null or std.mem.indexOf(u8, path, "claude-data") != null or std.mem.indexOf(u8, path, "claude") != null) return "claude";
     if (std.mem.indexOf(u8, path, "typingmind") != null) return "typingmind";
@@ -243,7 +263,7 @@ fn removeLegacyMixed(a: std.mem.Allocator, io: std.Io, exports_root: []const u8)
     }
 }
 
-pub fn collectArchives(a: std.mem.Allocator, io: std.Io, paths: []const []const u8, out: *std.ArrayList(Session), stats: *Stats, catalog_root: []const u8) !void {
+pub fn collectArchives(a: std.mem.Allocator, io: std.Io, paths: []const []const u8, out: *std.ArrayList(Session), stats: *Stats, catalog_root: []const u8, trash_enabled: bool) !void {
     removeLegacyMixed(a, io, catalog_root);
     for (paths) |path| {
         const stat = std.Io.Dir.cwd().statFile(io, path, .{}) catch {
@@ -264,6 +284,17 @@ pub fn collectArchives(a: std.mem.Allocator, io: std.Io, paths: []const []const 
                 const bytes = readFile(a, io, child) catch continue;
                 ingestJson(a, io, bytes, child, out, stats);
             }
+            // Extracted exports are catalogued; the transport zips are not
+            // needed any more. Trash (recoverable) rather than unlink.
+            if (trash_enabled) trashZipsUnder(a, io, path);
+            const parent = std.fs.path.dirname(path) orelse "";
+            if (parent.len > 0) {
+                const base = std.fs.path.basename(path);
+                const sibling = std.fmt.allocPrint(a, "{s}/{s}.zip", .{ parent, base }) catch "";
+                if (sibling.len > 0) {
+                    if (std.Io.Dir.cwd().statFile(io, sibling, .{})) |_| { if (trash_enabled) trashZip(a, io, sibling); } else |_| {}
+                }
+            }
             continue;
         }
 
@@ -279,16 +310,19 @@ pub fn collectArchives(a: std.mem.Allocator, io: std.Io, paths: []const []const 
                 stats.failed += 1;
                 continue;
             };
+            var extracted: usize = 0;
             var lines = std.mem.splitScalar(u8, listing, '\n');
             while (lines.next()) |line| {
                 const member = std.mem.trim(u8, line, " \r");
                 if (!std.mem.endsWith(u8, member, ".json")) continue;
                 const member_bytes = runCapture(a, io, &.{ "unzip", "-p", path, member }) catch continue;
                 writeExtracted(a, io, catalog, harness, stamp, member, member_bytes);
+                extracted += 1;
                 if (std.mem.indexOf(u8, member, "conversation") != null or std.mem.indexOf(u8, member, "chat") != null) {
                     ingestJson(a, io, member_bytes, try std.fmt.allocPrint(a, "{s}::{s}", .{ path, member }), out, stats);
                 }
             }
+            if (extracted > 0 and trash_enabled) trashZip(a, io, path);
         } else {
             catalogFile(a, io, path, catalog, harness, stamp, std.fs.path.basename(path));
             ingestJson(a, io, bytes, path, out, stats);

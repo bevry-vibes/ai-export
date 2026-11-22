@@ -149,6 +149,9 @@ pub fn collectKagi(a: std.mem.Allocator, io: std.Io, env: *const std.process.Env
     if (conversations.len == 0) {
         return error.KagiNoConversationList;
     }
+    if (env.get("KAGI_DEBUG") != null) {
+        std.Io.File.stderr().writeStreamingAll(io, std.fmt.allocPrint(a, "kagi: {d} conversations\n", .{conversations.len}) catch "") catch {};
+    }
 
     for (conversations) |conv| {
         if (conv != .object) continue;

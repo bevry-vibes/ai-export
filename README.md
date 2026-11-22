@@ -64,9 +64,9 @@ Not covered yet: Claude Desktop's IndexedDB LevelDB store, Codex's secondary SQL
 
 ## Archives and duplicates
 
-External archives (TypingMind JSON, Claude conversation exports, ChatGPT/OpenAI zip exports) are ingested with `--archive`; zip files are read in place and only their extracted contents are catalogued under `<output>/exports/<timestamp> - <harness>/`. Source archives are copied, never moved or deleted.
+External archives (TypingMind JSON, Claude conversation exports, ChatGPT/OpenAI zip exports) are ingested with `--archive`; zip files are read in place, only their extracted contents are catalogued under `<output>/exports/<timestamp> - <harness>/`, and the transport zips are then moved to the Trash. Source JSON archives are copied, never moved or deleted.
 
-Within a harness, exact copies collapse and an older transcript that is contained in a longer one is merged away; conflicting copies are listed in `<output>/conflicts.json`. Between harnesses, copies are **never** merged — `<output>/duplicates.json` records each pair as `exact`, `extended`, or `variant`, with the harnesses, titles, ids, and how many extra messages one side has.
+Within a harness, exact copies collapse and an older transcript that is contained in a longer one is merged away; conflicting copies are listed in `<output>/conflicts.json`. Between harnesses, copies are **never** merged — `<output>/duplicates.json` records each pair as `exact`, `extended`, or `variant`, with the harnesses, titles, ids, and how many extra messages one side has. It also records a `confidence` and a `reason`: the known TypingMind → AnythingLLM import path is high confidence, while other pairs only get a low-confidence ordering by timestamp. Content alone cannot prove which side is the original.
 
 ## Safety
 

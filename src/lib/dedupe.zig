@@ -21,6 +21,10 @@ pub const Duplicate = struct {
     kind: []const u8, // exact | extended
     extra_messages: usize = 0,
     extended_side: []const u8 = "",
+    original_harness: []const u8 = "",
+    copy_harness: []const u8 = "",
+    confidence: []const u8 = "low",
+    reason: []const u8 = "no provenance; earlier timestamp assumed original",
 };
 
 pub const Conflict = struct {
@@ -208,6 +212,21 @@ pub fn process(a: std.mem.Allocator, sessions: *std.ArrayList(Session)) !Result 
                         side = s2.harness;
                     }
                 }
+                var original = s1.harness;
+                var copy = s2.harness;
+                var confidence: []const u8 = "low";
+                var reason: []const u8 = "no provenance; earlier timestamp assumed original";
+                if ((std.mem.eql(u8, s1.harness, "typingmind") and std.mem.eql(u8, s2.harness, "anythingllm")) or
+                    (std.mem.eql(u8, s2.harness, "typingmind") and std.mem.eql(u8, s1.harness, "anythingllm")))
+                {
+                    original = "typingmind";
+                    copy = "anythingllm";
+                    confidence = "high";
+                    reason = "Dorothy ai-sync imported TypingMind exports into AnythingLLM workspaces";
+                } else if (std.mem.order(u8, s1.stamp, s2.stamp) == .gt) {
+                    original = s2.harness;
+                    copy = s1.harness;
+                }
                 try duplicates.append(a, .{
                     .a_harness = s1.harness,
                     .a_id = s1.id,
@@ -218,6 +237,10 @@ pub fn process(a: std.mem.Allocator, sessions: *std.ArrayList(Session)) !Result 
                     .kind = kind,
                     .extra_messages = extra,
                     .extended_side = side,
+                    .original_harness = original,
+                    .copy_harness = copy,
+                    .confidence = confidence,
+                    .reason = reason,
                 });
             }
         }
@@ -254,6 +277,10 @@ pub fn writeReports(a: std.mem.Allocator, io: std.Io, output: []const u8, result
         try put(a, &item, "title_b", d.b_title);
         try put(a, &item, "kind", d.kind);
         try put(a, &item, "extended_side", d.extended_side);
+        try put(a, &item, "original_harness", d.original_harness);
+        try put(a, &item, "copy_harness", d.copy_harness);
+        try put(a, &item, "confidence", d.confidence);
+        try put(a, &item, "reason", d.reason);
         try item.put(a, "extra_messages", .{ .integer = @intCast(d.extra_messages) });
         try dups.append(.{ .object = item });
     }

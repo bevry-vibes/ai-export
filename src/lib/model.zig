@@ -213,7 +213,7 @@ pub fn titleOf(obj: std.json.ObjectMap) []const u8 {
 }
 
 pub fn idOf(obj: std.json.ObjectMap) []const u8 {
-    const keys = [_][]const u8{ "session_id", "sessionId", "id", "traceId", "requestId" };
+    const keys = [_][]const u8{ "session_id", "sessionId", "id", "uuid", "traceId", "requestId" };
     for (keys) |key| {
         if (jstr(obj, key)) |v| return v;
     }
