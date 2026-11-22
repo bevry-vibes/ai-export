@@ -28,7 +28,23 @@ test "slug collapses punctuation and caps length" {
 test "stamp formats epoch milliseconds as UTC" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    try testing.expectEqualStrings("20261122T000000Z", try model.stamp(arena.allocator(), std.testing.io, "1795305600000"));
+    try testing.expectEqualStrings("2026-11-22 00-00", try model.stamp(arena.allocator(), std.testing.io, "1795305600000"));
+}
+
+test "stamp parses ISO-8601 timestamps" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectEqualStrings("2026-11-22 10-51", try model.stamp(arena.allocator(), std.testing.io, "2026-11-22T10:51:09.123Z"));
+    try testing.expectEqualStrings("2026-11-22 03-51", try model.stamp(arena.allocator(), std.testing.io, "2026-11-22T10:51:09+07:00"));
+}
+
+test "shortId is stable and fixed width" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const one = try model.shortId(a, "session-123");
+    try testing.expectEqual(@as(usize, 8), one.len);
+    try testing.expectEqualStrings(one, try model.shortId(a, "session-123"));
 }
 
 test "collectMessages reads role and content pairs" {

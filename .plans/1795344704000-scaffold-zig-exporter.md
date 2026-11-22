@@ -28,10 +28,10 @@ The chosen design keeps all store access in `src/lib/readers.zig`. Each harness 
 
 ### File schema
 
-- `<stamp>-<harness>-<title>.md` — numbered `Prompt` / `Answer` sections only, no metadata.
-- `<stamp>-<harness>-<title>.json` — `schema`, `session` (id, title, harness, provider, model, cwd, source path, stamp), `counts`, `attachments`, and every message with role, time, and content.
-- `attachments/<stamp>-<harness>-<attachment>.<ext>` — copied from paths found in attachment-like fields, only when the file exists.
-- `.ai-export-sync-manifest.tsv` — source path, Wyhash of messages and attachments, and the two output paths. A matching hash leaves the pair untouched; a changed pair is removed before being rewritten.
+- `<harness>/<yyyy-mm-dd hh-mm> - <session-id> - <title>.md` — `Prompt` / `Answer` turns only, no metadata.
+- `<harness>/<yyyy-mm-dd hh-mm> - <session-id> - <title>.json` — `schema`, `session` (id, title, harness, provider, model, cwd, source path, stamp), `counts`, `attachments`, and every message with role, time, and content.
+- `<harness>/attachments/<yyyy-mm-dd hh-mm> - <session-id> - <attachment>.<ext>` — copied from paths found in attachment-like fields, only when the file exists.
+- Every run wipes previous generated files first; there is no incremental manifest. This keeps one generation of output on disk.
 
 ### Code impact
 
@@ -48,13 +48,13 @@ The chosen design keeps all store access in `src/lib/readers.zig`. Each harness 
 
 ### Known gaps
 
-OpenCode's current SQLite store keeps message summaries and metadata but not full prompt text in the `message.data` rows, so those sessions are discovered and skipped rather than exported as empty files. Zed's zstd thread blobs, Crush, and Copilot CLI databases are not covered in this first pass.
+Coverage now includes OpenCode v2 `session_message` plus legacy `part` rows, Kilo, AnythingLLM, Goose, Crush, Copilot's VS Code store, Cline, CodeWhale, Codex, zstd-compressed DSH, ZCode, Pi, Qwen, and Reasonix. Claude Desktop's IndexedDB store and Copilot CLI's empty-window JSONL are not covered.
 
 ## Verification
 
 - `./scripts/zig build test` — five unit tests pass.
 - `./scripts/zig build` — native binary compiles.
-- `ai-export-sync --dry-run` — discovers 998 sessions, skips 744 metadata-only OpenCode and Kilo sessions, reports no failures.
-- `ai-export-sync --output=<temp>` — writes 254 Markdown/JSON pairs from cline, codex, codewhale, dsh, and zcode stores; sample Markdown contains only prompt/answer turns.
-- A second run reports 254 unchanged pairs, confirming the manifest skips unchanged sessions.
+- `ai-export --dry-run` — discovers 1449 sessions, skips 9, reports no failures.
+- `ai-export --output=<temp>` — writes human-readable per-harness pairs using source timestamps and short session ids; sample Markdown contains only prompt/answer turns.
+- A second run wipes and rewrites the same set, leaving one generation of files.
 - `agent-detect identify` and `check-reciprocal` — pass after rebuilding agent-detect.

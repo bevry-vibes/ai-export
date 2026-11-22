@@ -37,7 +37,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption([]const u8, "version", version);
 
     const native_exe = b.addExecutable(.{
-        .name = "ai-export-sync",
+        .name = "ai-export",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = native_target,
@@ -63,7 +63,7 @@ pub fn build(b: *std.Build) void {
     const dist = b.step("dist", "cross-compile release binaries");
     for (targets) |t| {
         const exe = b.addExecutable(.{
-            .name = "ai-export-sync",
+            .name = "ai-export",
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/main.zig"),
                 .target = b.resolveTargetQuery(t.query),

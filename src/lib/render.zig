@@ -10,100 +10,88 @@ const std = @import("std");
 const model = @import("model.zig");
 
 const Session = model.Session;
-const ManifestEntry = struct {
-    source: []const u8,
-    hash: u64,
-    md: []const u8,
-    json: []const u8,
-};
 
 pub const Writer = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     output: []const u8,
-    attachments_dir: []const u8,
-    manifest_path: []const u8,
-    entries: std.ArrayList(ManifestEntry) = .empty,
     written: usize = 0,
-    skipped: usize = 0,
     attachment_count: usize = 0,
 
     pub fn init(a: std.mem.Allocator, io: std.Io, output: []const u8) !Writer {
-        const attach = try std.fs.path.join(a, &.{ output, "attachments" });
-        const manifest = try std.fs.path.join(a, &.{ output, ".ai-export-sync-manifest.tsv" });
-        var self = Writer{
-            .allocator = a,
-            .io = io,
-            .output = output,
-            .attachments_dir = attach,
-            .manifest_path = manifest,
-        };
-        try std.Io.Dir.cwd().createDirPath(io, attach);
-        self.readManifest() catch {};
+        try std.Io.Dir.cwd().createDirPath(io, output);
+        var self = Writer{ .allocator = a, .io = io, .output = output };
+        try self.clean();
         return self;
     }
 
-    fn readManifest(self: *Writer) !void {
-        const bytes = std.Io.Dir.cwd().readFileAlloc(self.io, self.manifest_path, self.allocator, @enumFromInt(@as(u64, 4 << 20))) catch return;
-        var lines = std.mem.splitScalar(u8, bytes, '\n');
-        while (lines.next()) |line| {
-            if (line.len == 0) continue;
-            var fields = std.mem.splitScalar(u8, line, '\t');
-            const source = fields.next() orelse continue;
-            const hash_raw = fields.next() orelse continue;
-            const md = fields.next() orelse continue;
-            const json = fields.next() orelse continue;
-            const hash = std.fmt.parseInt(u64, hash_raw, 10) catch continue;
-            try self.entries.append(self.allocator, .{
-                .source = try self.allocator.dupe(u8, source),
-                .hash = hash,
-                .md = try self.allocator.dupe(u8, md),
-                .json = try self.allocator.dupe(u8, json),
-            });
+    /// Every run is a full regeneration: wipe previous exports so a format
+    /// change never leaves two generations of files side by side.
+    fn clean(self: *Writer) !void {
+        var dir = std.Io.Dir.cwd().openDir(self.io, self.output, .{ .iterate = true }) catch return;
+        defer dir.close(self.io);
+        var it = dir.iterate();
+        while (it.next(self.io) catch null) |entry| {
+            const path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.output, entry.name });
+            switch (entry.kind) {
+                .file => {
+                    if (std.mem.endsWith(u8, entry.name, ".md") or
+                        std.mem.endsWith(u8, entry.name, ".json") or
+                        std.mem.startsWith(u8, entry.name, ".ai-export"))
+                    {
+                        std.Io.Dir.cwd().deleteFile(self.io, path) catch {};
+                    }
+                },
+                .directory => {
+                    if (std.mem.eql(u8, entry.name, "attachments")) {
+                        std.Io.Dir.cwd().deleteTree(self.io, path) catch {};
+                        continue;
+                    }
+                    var harness_dir = std.Io.Dir.cwd().openDir(self.io, path, .{ .iterate = true }) catch continue;
+                    var harness_it = harness_dir.iterate();
+                    while (harness_it.next(self.io) catch null) |child| {
+                        const child_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ path, child.name });
+                        switch (child.kind) {
+                            .file => {
+                                if (std.mem.endsWith(u8, child.name, ".md") or std.mem.endsWith(u8, child.name, ".json")) {
+                                    std.Io.Dir.cwd().deleteFile(self.io, child_path) catch {};
+                                }
+                            },
+                            .directory => {
+                                if (std.mem.eql(u8, child.name, "attachments")) std.Io.Dir.cwd().deleteTree(self.io, child_path) catch {};
+                            },
+                            else => {},
+                        }
+                    }
+                    harness_dir.close(self.io);
+                },
+                else => {},
+            }
         }
     }
 
-    fn previous(self: *Writer, source: []const u8) ?usize {
-        for (self.entries.items, 0..) |entry, i| {
-            if (std.mem.eql(u8, entry.source, source)) return i;
-        }
-        return null;
-    }
-
-    fn exists(self: *Writer, path: []const u8) bool {
-        _ = std.Io.Dir.cwd().statFile(self.io, path, .{}) catch return false;
-        return true;
-    }
-
-    fn nameFor(self: *Writer, session: Session) !struct { stem: []const u8, md: []const u8, json: []const u8 } {
+    fn harnessDir(self: *Writer, harness: []const u8) !struct { root: []const u8, attachments: []const u8 } {
         const a = self.allocator;
-        const slug = try model.slug(a, session.title);
-        const base = try std.fmt.allocPrint(a, "{s}-{s}-{s}", .{ session.stamp, session.harness, slug });
-        var candidate = try a.dupe(u8, base);
-        var n: usize = 2;
-        while (self.exists(try std.fmt.allocPrint(a, "{s}/{s}.md", .{ self.output, candidate }))) {
-            candidate = try std.fmt.allocPrint(a, "{s}-{d}", .{ base, n });
-            n += 1;
-        }
-        return .{
-            .stem = candidate,
-            .md = try std.fmt.allocPrint(a, "{s}/{s}.md", .{ self.output, candidate }),
-            .json = try std.fmt.allocPrint(a, "{s}/{s}.json", .{ self.output, candidate }),
-        };
+        const root = try std.fs.path.join(a, &.{ self.output, harness });
+        const attachments = try std.fs.path.join(a, &.{ root, "attachments" });
+        try std.Io.Dir.cwd().createDirPath(self.io, attachments);
+        return .{ .root = root, .attachments = attachments };
+    }
+
+    fn base(self: *Writer, session: Session) ![]const u8 {
+        const a = self.allocator;
+        const title = try model.humanTitle(a, session.title);
+        const short = try model.shortId(a, session.id);
+        return std.fmt.allocPrint(a, "{s} - {s} - {s}", .{ session.stamp, short, title });
     }
 
     fn markdown(self: *Writer, session: Session) ![]u8 {
         var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(self.allocator);
         const a = self.allocator;
-        var turn: usize = 0;
         for (session.messages) |message| {
             if (!std.mem.eql(u8, message.role, "user") and !std.mem.eql(u8, message.role, "assistant")) continue;
-            if (std.mem.eql(u8, message.role, "user")) turn += 1;
-            const label = if (std.mem.eql(u8, message.role, "user"))
-                try std.fmt.allocPrint(a, "### {d}. Prompt", .{turn})
-            else
-                try std.fmt.allocPrint(a, "### {d}. Answer", .{if (turn == 0) 1 else turn});
+            const label = if (std.mem.eql(u8, message.role, "user")) "### Prompt" else "### Answer";
             if (out.items.len > 0) try out.append(a, '\n');
             try out.appendSlice(a, label);
             try out.appendSlice(a, "\n\n");
@@ -120,7 +108,8 @@ pub const Writer = struct {
     fn jsonDocument(self: *Writer, session: Session, attachments: []const []const u8) ![]u8 {
         const a = self.allocator;
         var root = std.json.ObjectMap.empty;
-        try put(a, &root, "schema", "ai-export-sync/1");
+        try put(a, &root, "schema", "ai-export/2");
+
         var info = std.json.ObjectMap.empty;
         try put(a, &info, "id", session.id);
         try put(a, &info, "title", session.title);
@@ -157,32 +146,26 @@ pub const Writer = struct {
             try msg_array.append(.{ .object = item });
         }
         try root.put(a, "messages", .{ .array = msg_array });
+
         const doc: std.json.Value = .{ .object = root };
         return std.json.Stringify.valueAlloc(a, doc, .{ .whitespace = .indent_2 });
     }
 
-    fn copyAttachments(self: *Writer, session: Session) ![][]const u8 {
+    fn copyAttachments(self: *Writer, session: Session, dir: []const u8) ![][]const u8 {
         const a = self.allocator;
+        const short = try model.shortId(a, session.id);
         var outputs: std.ArrayList([]const u8) = .empty;
         for (session.attachments) |att| {
             const source = att.source_path;
             if (source.len == 0) continue;
             var resolved = source;
-            if (!std.fs.path.isAbsolute(source)) {
-                if (session.cwd.len > 0) {
-                    resolved = std.fs.path.join(a, &.{ session.cwd, source }) catch source;
-                }
+            if (!std.fs.path.isAbsolute(source) and session.cwd.len > 0) {
+                resolved = std.fs.path.join(a, &.{ session.cwd, source }) catch source;
             }
             if (std.Io.Dir.cwd().statFile(self.io, resolved, .{})) |_| {} else |_| continue;
-            const att_slug = try model.slug(a, std.fs.path.stem(att.title));
-            const base = try std.fmt.allocPrint(a, "{s}-{s}-{s}", .{ session.stamp, session.harness, att_slug });
-            var name = try std.fmt.allocPrint(a, "{s}.{s}", .{ base, att.extension });
-            var n: usize = 2;
-            while (self.exists(try std.fmt.allocPrint(a, "{s}/{s}", .{ self.attachments_dir, name }))) {
-                name = try std.fmt.allocPrint(a, "{s}-{d}.{s}", .{ base, n, att.extension });
-                n += 1;
-            }
-            const dest = try std.fmt.allocPrint(a, "{s}/{s}", .{ self.attachments_dir, name });
+            const att_title = try model.humanTitle(a, std.fs.path.stem(att.title));
+            const name = try std.fmt.allocPrint(a, "{s} - {s} - {s}.{s}", .{ session.stamp, short, att_title, att.extension });
+            const dest = try std.fs.path.join(a, &.{ dir, name });
             std.Io.Dir.cwd().copyFile(resolved, std.Io.Dir.cwd(), dest, self.io, .{}) catch continue;
             try outputs.append(a, dest);
             self.attachment_count += 1;
@@ -190,43 +173,17 @@ pub const Writer = struct {
         return outputs.toOwnedSlice(a);
     }
 
-    pub fn writeSession(self: *Writer, session: Session) !bool {
+    pub fn writeSession(self: *Writer, session: Session) !void {
         const a = self.allocator;
-        const digest = model.hashMessages(session.messages, session.attachments);
-        if (self.previous(session.source_path)) |i| {
-            const old = self.entries.items[i];
-            if (old.hash == digest and self.exists(old.md) and self.exists(old.json)) {
-                self.skipped += 1;
-                return false;
-            }
-            std.Io.Dir.cwd().deleteFile(self.io, old.md) catch {};
-            std.Io.Dir.cwd().deleteFile(self.io, old.json) catch {};
-            _ = self.entries.orderedRemove(i);
-        }
-
-        const names = try self.nameFor(session);
-        const outputs = try self.copyAttachments(session);
+        const dirs = try self.harnessDir(session.harness);
+        const stem = try self.base(session);
+        const outputs = try self.copyAttachments(session, dirs.attachments);
         const md = try self.markdown(session);
         const doc = try self.jsonDocument(session, outputs);
-        try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = names.md, .data = md });
-        try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = names.json, .data = doc });
-        try self.entries.append(a, .{
-            .source = try a.dupe(u8, session.source_path),
-            .hash = digest,
-            .md = names.md,
-            .json = names.json,
-        });
+        const md_path = try std.fmt.allocPrint(a, "{s}/{s}.md", .{ dirs.root, stem });
+        const json_path = try std.fmt.allocPrint(a, "{s}/{s}.json", .{ dirs.root, stem });
+        try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = md_path, .data = md });
+        try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = json_path, .data = doc });
         self.written += 1;
-        return true;
-    }
-
-    pub fn saveManifest(self: *Writer) !void {
-        var out: std.ArrayList(u8) = .empty;
-        defer out.deinit(self.allocator);
-        for (self.entries.items) |entry| {
-            const line = try std.fmt.allocPrint(self.allocator, "{s}\t{d}\t{s}\t{s}\n", .{ entry.source, entry.hash, entry.md, entry.json });
-            try out.appendSlice(self.allocator, line);
-        }
-        try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = self.manifest_path, .data = out.items });
     }
 };

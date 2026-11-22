@@ -1,8 +1,8 @@
 .{
-    .name = .ai_export_sync,
+    .name = .ai_export,
     .version = "2026.11.22-1",
     .minimum_zig_version = "0.17.0",
     .dependencies = .{},
     .paths = .{""},
-    .fingerprint = 0x66fd702ec0c99702,
+    .fingerprint = 0x446614b001eefed3,
 }

@@ -70,6 +70,42 @@ pub fn slug(a: std.mem.Allocator, raw: []const u8) ![]u8 {
     return out.toOwnedSlice(a);
 }
 
+fn daysFromCivil(year: i64, month: i64, day: i64) i64 {
+    const y = year - @as(i64, if (month <= 2) 1 else 0);
+    const era = @divFloor(y, 400);
+    const yoe = y - era * 400;
+    const shifted = month + @as(i64, if (month > 2) -3 else 9);
+    const doy = @divTrunc(153 * shifted + 2, 5) + day - 1;
+    const doe = yoe * 365 + @divTrunc(yoe, 4) - @divTrunc(yoe, 100) + doy;
+    return era * 146097 + doe - 719468;
+}
+
+/// Parse the common ISO-8601 shape `YYYY-MM-DDTHH:MM:SS[.fff][Z|+HH:MM]`.
+fn isoSecs(raw: []const u8) ?i64 {
+    if (raw.len < 19) return null;
+    if (raw[4] != '-' or raw[7] != '-' or (raw[10] != 'T' and raw[10] != ' ')) return null;
+    const year = std.fmt.parseInt(i64, raw[0..4], 10) catch return null;
+    const month = std.fmt.parseInt(i64, raw[5..7], 10) catch return null;
+    const day = std.fmt.parseInt(i64, raw[8..10], 10) catch return null;
+    const hour = std.fmt.parseInt(i64, raw[11..13], 10) catch return null;
+    const minute = std.fmt.parseInt(i64, raw[14..16], 10) catch return null;
+    const second = std.fmt.parseInt(i64, raw[17..19], 10) catch return null;
+    var secs = daysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second;
+    var i: usize = 19;
+    if (i < raw.len and raw[i] == '.') {
+        i += 1;
+        while (i < raw.len and std.ascii.isDigit(raw[i])) : (i += 1) {}
+    }
+    if (i < raw.len and (raw[i] == '+' or raw[i] == '-')) {
+        const sign: i64 = if (raw[i] == '+') -1 else 1;
+        if (i + 6 > raw.len) return null;
+        const oh = std.fmt.parseInt(i64, raw[i + 1 .. i + 3], 10) catch return null;
+        const om = std.fmt.parseInt(i64, raw[i + 4 .. i + 6], 10) catch return null;
+        secs += sign * (oh * 3600 + om * 60);
+    }
+    return secs;
+}
+
 /// Filesystem-safe UTC timestamp: YYYYMMDDTHHMMSSZ.
 pub fn stamp(a: std.mem.Allocator, io: std.Io, raw: []const u8) ![]u8 {
     var secs: ?u64 = null;
@@ -84,6 +120,8 @@ pub fn stamp(a: std.mem.Allocator, io: std.Io, raw: []const u8) ![]u8 {
         if (all_digits) {
             const value = std.fmt.parseInt(u64, raw, 10) catch 0;
             secs = if (value > 100_000_000_000) @intCast(@divTrunc(value, 1000)) else value;
+        } else if (isoSecs(raw)) |parsed| {
+            if (parsed >= 0) secs = @intCast(parsed);
         }
     }
     const now_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
@@ -93,14 +131,36 @@ pub fn stamp(a: std.mem.Allocator, io: std.Io, raw: []const u8) ![]u8 {
     const yd = day.calculateYearDay();
     const md = yd.calculateMonthDay();
     const ds = epoch.getDaySeconds();
-    return std.fmt.allocPrint(a, "{d:0>4}{d:0>2}{d:0>2}T{d:0>2}{d:0>2}{d:0>2}Z", .{
+    return std.fmt.allocPrint(a, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}-{d:0>2}", .{
         yd.year,
         @backingInt(md.month),
         @as(u32, md.day_index) + 1,
         ds.getHoursIntoDay(),
         ds.getMinutesIntoHour(),
-        ds.getSecondsIntoMinute(),
     });
+}
+
+/// Keep titles human: spaces and punctuation stay, filesystem-hostile bytes go.
+pub fn humanTitle(a: std.mem.Allocator, raw: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(a);
+    var pending_space = false;
+    for (raw) |c| {
+        if (c < 0x20 or c == '/' or c == '\\' or c == ':' or c == '*' or c == '?' or c == '"' or c == '<' or c == '>' or c == '|') {
+            pending_space = out.items.len > 0;
+            continue;
+        }
+        if (std.ascii.isWhitespace(c)) {
+            pending_space = out.items.len > 0;
+            continue;
+        }
+        if (pending_space and out.items.len > 0) try out.append(a, ' ');
+        pending_space = false;
+        if (out.items.len < 70) try out.append(a, c);
+    }
+    while (out.items.len > 0 and out.items[out.items.len - 1] == ' ') _ = out.pop();
+    if (out.items.len == 0) try out.appendSlice(a, "Untitled session");
+    return out.toOwnedSlice(a);
 }
 
 /// Stable hash of the export payload: used to skip sessions that did not change.
@@ -118,14 +178,60 @@ pub fn hashMessages(messages: []const Message, attachments: []const Attachment) 
     return hasher.final();
 }
 
-/// First timestamp-looking string found in an object, across common spellings.
+fn nested(obj: std.json.ObjectMap, key: []const u8) ?std.json.ObjectMap {
+    const value = obj.get(key) orelse return null;
+    return if (value == .object) value.object else null;
+}
+
+/// First timestamp-looking value, including common nested `metadata` / `payload`
+/// objects. Caller owns the returned string only when it came from an integer.
 pub fn firstTime(obj: std.json.ObjectMap) []const u8 {
-    const keys = [_][]const u8{ "createdAt", "created_at", "time_created", "timestamp", "startedAt", "started_at", "updatedAt", "updated_at", "time" };
+    const keys = [_][]const u8{ "createdAt", "created_at", "time_created", "timestamp", "startedAt", "started_at", "updatedAt", "updated_at", "time", "ts" };
     for (keys) |key| {
         if (jstr(obj, key)) |v| return v;
         if (jint(obj, key)) |n| {
             return std.fmt.allocPrint(std.heap.page_allocator, "{d}", .{n}) catch "";
         }
     }
+    const containers = [_][]const u8{ "metadata", "payload", "time", "info" };
+    for (containers) |key| {
+        if (nested(obj, key)) |inner| {
+            const found = firstTime(inner);
+            if (found.len > 0) return found;
+        }
+    }
     return "";
+}
+
+pub fn titleOf(obj: std.json.ObjectMap) []const u8 {
+    if (jstr(obj, "title")) |v| return v;
+    if (jstr(obj, "name")) |v| return v;
+    if (nested(obj, "metadata")) |meta| {
+        if (jstr(meta, "title")) |v| return v;
+    }
+    return "";
+}
+
+pub fn idOf(obj: std.json.ObjectMap) []const u8 {
+    const keys = [_][]const u8{ "session_id", "sessionId", "id", "traceId", "requestId" };
+    for (keys) |key| {
+        if (jstr(obj, key)) |v| return v;
+    }
+    if (nested(obj, "metadata")) |meta| {
+        for (keys) |key| {
+            if (jstr(meta, key)) |v| return v;
+        }
+    }
+    if (nested(obj, "payload")) |payload| {
+        for (keys) |key| {
+            if (jstr(payload, key)) |v| return v;
+        }
+    }
+    return "";
+}
+
+/// Short deterministic suffix from a full session id.
+pub fn shortId(a: std.mem.Allocator, id: []const u8) ![]u8 {
+    const hash: u32 = @truncate(std.hash.Wyhash.hash(0, id));
+    return std.fmt.allocPrint(a, "{x:0>8}", .{hash});
 }

@@ -14,10 +14,10 @@ const model = @import("lib/model.zig");
 const normalize = @import("lib/normalize.zig");
 
 pub const usage =
-    \\ai-export-sync — export harness chats to Markdown and JSON files
+    \\ai-export — export harness chats to Markdown and JSON files
     \\
     \\usage:
-    \\  ai-export-sync [options]
+    \\  ai-export [options]
     \\
     \\options:
     \\  --output=<dir>     output directory (default: ~/Documents/AI)
@@ -27,9 +27,9 @@ pub const usage =
     \\  --help             show this help
     \\
     \\files per session:
-    \\  <stamp>-<harness>-<title>.md    prompts and answers only
-    \\  <stamp>-<harness>-<title>.json  all metadata and messages
-    \\  attachments/<stamp>-<harness>-<attachment>.<ext>
+    \\  <harness>/yyyy-mm-dd hh-mm - <session-id> - <title>.md
+    \\  <harness>/yyyy-mm-dd hh-mm - <session-id> - <title>.json
+    \\  <harness>/attachments/yyyy-mm-dd hh-mm - <session-id> - <attachment>.<ext>
     \\
 ;
 
@@ -106,11 +106,10 @@ fn mainInner(init: std.process.Init) !u8 {
             _ = try w.writeSession(session);
         }
     }
-    if (writer) |*w| try w.saveManifest();
 
     const summary = try std.fmt.allocPrint(a,
-        "scanned: {d} sessions · exported: {d} · unchanged: {d} · skipped: {d} · failed: {d} · attachments: {d}\noutput: {s}\n",
-        .{ stats.scanned, if (writer) |w| w.written else 0, if (writer) |w| w.skipped else 0, stats.skipped, stats.failed, if (writer) |w| w.attachment_count else 0, output },
+        "scanned: {d} sessions · exported: {d} · skipped: {d} · failed: {d} · attachments: {d}\noutput: {s}\n",
+        .{ stats.scanned, if (writer) |w| w.written else 0, stats.skipped, stats.failed, if (writer) |w| w.attachment_count else 0, output },
     );
     writeOut(io, summary);
     return 0;

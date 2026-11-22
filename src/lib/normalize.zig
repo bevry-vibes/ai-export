@@ -92,7 +92,7 @@ pub fn collectMessages(a: std.mem.Allocator, value: std.json.Value, out: *std.Ar
                 }
             }
             // transcript envelopes hold messages under these keys
-            const keys = [_][]const u8{ "messages", "records", "data", "payload", "session", "conversation", "chat", "thread" };
+            const keys = [_][]const u8{ "messages", "records", "data", "payload", "session", "conversation", "chat", "thread", "message", "request", "response", "body" };
             for (keys) |key| {
                 if (obj.get(key)) |item| try collectMessages(a, item, out, depth + 1);
             }

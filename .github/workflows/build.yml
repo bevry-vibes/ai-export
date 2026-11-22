@@ -23,9 +23,9 @@ jobs:
         run: zig build dist --prefix .
       - name: smoke test (linux x86_64)
         run: |
-          chmod +x bin/ai-export-sync-linux-x86_64
-          ./bin/ai-export-sync-linux-x86_64 --help
-          ./bin/ai-export-sync-linux-x86_64 --version
+          chmod +x bin/ai-export-linux-x86_64
+          ./bin/ai-export-linux-x86_64 --help
+          ./bin/ai-export-linux-x86_64 --version
 
   release:
     if: github.event_name == 'push' && github.ref_type == 'tag'
@@ -43,8 +43,8 @@ jobs:
         run: zig build dist --prefix .
       - name: smoke test (linux x86_64)
         run: |
-          chmod +x bin/ai-export-sync-linux-x86_64
-          ./bin/ai-export-sync-linux-x86_64 --version
+          chmod +x bin/ai-export-linux-x86_64
+          ./bin/ai-export-linux-x86_64 --version
       - name: publish tagged release as latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
