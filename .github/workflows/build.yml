@@ -1,0 +1,55 @@
+name: build
+
+on:
+  push:
+    tags: ['*.*.*-*']
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  smoke:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: step-security/setup-zig@v2
+      - name: verify the pinned Zig
+        run: test "$(zig version)" = "$(sed -n 's/.*minimum_zig_version = "\([^"]*\)".*/\1/p' build.zig.zon)"
+      - name: unit tests
+        run: zig build test
+      - name: cross-compile all targets
+        run: zig build dist --prefix .
+      - name: smoke test (linux x86_64)
+        run: |
+          chmod +x bin/ai-export-sync-linux-x86_64
+          ./bin/ai-export-sync-linux-x86_64 --help
+          ./bin/ai-export-sync-linux-x86_64 --version
+
+  release:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: step-security/setup-zig@v2
+      - name: verify the pinned Zig
+        run: test "$(zig version)" = "$(sed -n 's/.*minimum_zig_version = "\([^"]*\)".*/\1/p' build.zig.zon)"
+      - name: unit tests
+        run: zig build test
+      - name: cross-compile all targets
+        run: zig build dist --prefix .
+      - name: smoke test (linux x86_64)
+        run: |
+          chmod +x bin/ai-export-sync-linux-x86_64
+          ./bin/ai-export-sync-linux-x86_64 --version
+      - name: publish tagged release as latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" bin/* \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --latest
