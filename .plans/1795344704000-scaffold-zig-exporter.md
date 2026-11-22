@@ -54,6 +54,7 @@ OpenCode's current SQLite store keeps message summaries and metadata but not ful
 
 - `./scripts/zig build test` — five unit tests pass.
 - `./scripts/zig build` — native binary compiles.
-- `ai-export-sync --dry-run` — discovers 558 sessions, skips 304 metadata-only OpenCode sessions, reports no failures.
+- `ai-export-sync --dry-run` — discovers 998 sessions, skips 744 metadata-only OpenCode and Kilo sessions, reports no failures.
 - `ai-export-sync --output=<temp>` — writes 254 Markdown/JSON pairs from cline, codex, codewhale, dsh, and zcode stores; sample Markdown contains only prompt/answer turns.
+- A second run reports 254 unchanged pairs, confirming the manifest skips unchanged sessions.
 - `agent-detect identify` and `check-reciprocal` — pass after rebuilding agent-detect.

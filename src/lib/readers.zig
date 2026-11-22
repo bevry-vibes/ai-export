@@ -52,9 +52,19 @@ const opencode_messages =
     \\
 ;
 
+const kilo_sessions =
+    \\SELECT id, COALESCE(title,'') AS title, time_created AS time, directory AS cwd, COALESCE(model,'') AS model FROM session WHERE time_archived IS NULL ORDER BY time_created DESC
+    \\
+;
+
+const kilo_messages =
+    \\SELECT time_created AS time, data AS body FROM session_message WHERE session_id = {s} ORDER BY seq, time_created
+    \\
+;
+
 pub const sql_specs = [_]SqlSpec{
     .{ .harness = "opencode", .db = ".local/share/opencode/opencode.db", .sessions_sql = opencode_sessions, .messages_sql = opencode_messages },
-    .{ .harness = "kilo", .db = ".local/share/kilo/kilo.db", .sessions_sql = opencode_sessions, .messages_sql = opencode_messages },
+    .{ .harness = "kilo", .db = ".local/share/kilo/kilo.db", .sessions_sql = kilo_sessions, .messages_sql = kilo_messages },
 };
 
 pub const Stats = struct {
