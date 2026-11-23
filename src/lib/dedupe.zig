@@ -89,6 +89,32 @@ fn seqHash(a: std.mem.Allocator, session: Session) u64 {
     return h.final();
 }
 
+/// Text-only hash for cross-harness comparison: model metadata differs by
+/// design between harnesses and must not hide identical transcripts.
+fn textHash(a: std.mem.Allocator, session: Session) u64 {
+    var h = std.hash.Wyhash.init(0);
+    for (session.messages) |m| {
+        h.update(m.role);
+        h.update(fingerprint(a, m.content));
+    }
+    return h.final();
+}
+
+fn sameText(alloc: std.mem.Allocator, a: model.Message, b: model.Message) bool {
+    return std.mem.eql(u8, a.role, b.role) and
+        std.mem.eql(u8, fingerprint(alloc, a.content), fingerprint(alloc, b.content));
+}
+
+fn containsText(alloc: std.mem.Allocator, sup: []const model.Message, sub: []const model.Message) bool {
+    if (sub.len < 4 or sup.len < sub.len) return false;
+    var j: usize = 0;
+    for (sup) |m| {
+        if (j < sub.len and sameText(alloc, m, sub[j])) j += 1;
+        if (j == sub.len) return true;
+    }
+    return false;
+}
+
 fn firstHash(a: std.mem.Allocator, session: Session) u64 {
     if (session.messages.len == 0) return 0;
     const m = session.messages[0];
@@ -278,18 +304,18 @@ pub fn process(a: std.mem.Allocator, sessions: *std.ArrayList(Session)) !Result 
                 const s2 = sessions.items[j];
                 if (s1.messages.len < 4 or s2.messages.len < 4) continue;
                 if (std.mem.eql(u8, s1.harness, s2.harness)) continue;
-                const h1 = seqHash(a, s1);
-                const h2 = seqHash(a, s2);
+                const h1 = textHash(a, s1);
+                const h2 = textHash(a, s2);
                 var kind: []const u8 = "";
                 var extra: usize = 0;
                 var side: []const u8 = "";
                 if (h1 == h2) {
                     kind = "exact";
-                } else if (containsOrdered(a, s1.messages, s2.messages)) {
+                } else if (containsText(a, s1.messages, s2.messages)) {
                     kind = "extended";
                     extra = s1.messages.len - s2.messages.len;
                     side = s1.harness;
-                } else if (containsOrdered(a, s2.messages, s1.messages)) {
+                } else if (containsText(a, s2.messages, s1.messages)) {
                     kind = "extended";
                     extra = s2.messages.len - s1.messages.len;
                     side = s2.harness;
