@@ -43,12 +43,28 @@ pub const usage =
     \\
 ;
 
+var log_output: ?[]const u8 = null;
+
+fn appendLog(io: std.Io, name: []const u8, text: []const u8) void {
+    const root = log_output orelse return;
+    if (text.len == 0) return;
+    const a = std.heap.page_allocator;
+    const path = std.fs.path.join(a, &.{ root, name }) catch return;
+    var bytes: []const u8 = text;
+    if (std.Io.Dir.cwd().readFileAlloc(io, path, a, @enumFromInt(@as(u64, 16 << 20)))) |old| {
+        bytes = std.mem.concat(a, u8, &.{ old, text }) catch text;
+    } else |_| {}
+    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = bytes }) catch {};
+}
+
 fn writeOut(io: std.Io, text: []const u8) void {
     std.Io.File.stdout().writeStreamingAll(io, text) catch {};
+    appendLog(io, "state.stdout.log", text);
 }
 
 fn writeErr(io: std.Io, text: []const u8) void {
     std.Io.File.stderr().writeStreamingAll(io, text) catch {};
+    appendLog(io, "state.stderr.log", text);
 }
 
 const progress_mod = @import("lib/progress.zig");
@@ -197,6 +213,11 @@ fn mainInner(init: std.process.Init) !u8 {
     };
     if (output.len == 0) output = try std.fs.path.join(a, &.{ home, "Documents/AI" });
     try std.Io.Dir.cwd().createDirPath(io, output);
+    log_output = output;
+    for ([_][]const u8{ "state.stdout.log", "state.stderr.log" }) |name| {
+        const path = try std.fs.path.join(a, &.{ output, name });
+        std.Io.Dir.cwd().deleteFile(io, path) catch {};
+    }
     var progress = Progress{ .a = a, .io = io, .output = output, .started_ns = Progress.now(io), .last_ns = Progress.now(io) };
     try progress.write();
     const progress_thread = try progress.start();

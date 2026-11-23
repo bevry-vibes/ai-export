@@ -34,7 +34,7 @@ pub const Writer = struct {
         while (it.next(self.io) catch null) |entry| {
             // The archives catalogue is source data, not a generated harness
             // export — keep it. Everything else is regenerated from scratch.
-            if (std.mem.eql(u8, entry.name, "archives") or std.mem.eql(u8, entry.name, "cache")) continue;
+            if (std.mem.eql(u8, entry.name, "archives") or std.mem.eql(u8, entry.name, "cache") or std.mem.startsWith(u8, entry.name, "state.")) continue;
             const path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.output, entry.name });
             switch (entry.kind) {
                 .file => std.Io.Dir.cwd().deleteFile(self.io, path) catch {},
