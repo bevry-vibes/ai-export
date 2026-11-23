@@ -54,6 +54,8 @@ fn writeErr(io: std.Io, text: []const u8) void {
 const Progress = struct {
     a: std.mem.Allocator,
     io: std.Io,
+    mutex: std.Io.Mutex = std.Io.Mutex.init,
+    running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
     output: []const u8,
     phase: []const u8 = "starting",
     started_ns: i128,
@@ -80,7 +82,8 @@ const Progress = struct {
         try obj.put(a, key, .{ .string = value });
     }
 
-    fn write(self: *Progress) !void {
+    fn writeUnlocked(self: *Progress) !void {
+        const a = std.heap.page_allocator;
         const ns = now(self.io);
         self.last_ns = ns;
         const elapsed_ns = @max(ns - self.started_ns, 0);
@@ -89,31 +92,55 @@ const Progress = struct {
             eta_ns = @divTrunc(elapsed_ns, @as(i128, @intCast(self.processed))) * @as(i128, @intCast(self.total - self.processed));
         }
         var root = std.json.ObjectMap.empty;
-        try put(self.a, &root, "phase", self.phase);
-        try put(self.a, &root, "updated_at", try std.fmt.allocPrint(self.a, "{d}", .{ns}));
-        try root.put(self.a, "cadence_seconds", .{ .integer = 10 });
-        try root.put(self.a, "total", .{ .integer = @intCast(self.total) });
-        try root.put(self.a, "processed", .{ .integer = @intCast(self.processed) });
-        try root.put(self.a, "exported", .{ .integer = @intCast(self.exported) });
-        try root.put(self.a, "skipped", .{ .integer = @intCast(self.skipped) });
-        try root.put(self.a, "failed", .{ .integer = @intCast(self.failed) });
-        try root.put(self.a, "attachments", .{ .integer = @intCast(self.attachments) });
-        try root.put(self.a, "titled", .{ .integer = @intCast(self.titled) });
-        try root.put(self.a, "noise_filtered", .{ .integer = @intCast(self.noise_filtered) });
-        try root.put(self.a, "collapsed", .{ .integer = @intCast(self.collapsed) });
-        try root.put(self.a, "merged", .{ .integer = @intCast(self.merged) });
-        try root.put(self.a, "duplicates", .{ .integer = @intCast(self.duplicates) });
-        try root.put(self.a, "conflicts", .{ .integer = @intCast(self.conflicts) });
-        try root.put(self.a, "elapsed_seconds", .{ .float = @as(f64, @floatFromInt(elapsed_ns)) / @as(f64, std.time.ns_per_s) });
-        try root.put(self.a, "eta_seconds", .{ .float = @as(f64, @floatFromInt(eta_ns)) / @as(f64, std.time.ns_per_s) });
+        try put(a, &root, "phase", self.phase);
+        try put(a, &root, "updated_at", try std.fmt.allocPrint(a, "{d}", .{ns}));
+        try root.put(a, "cadence_seconds", .{ .integer = 10 });
+        try root.put(a, "total", .{ .integer = @intCast(self.total) });
+        try root.put(a, "processed", .{ .integer = @intCast(self.processed) });
+        try root.put(a, "exported", .{ .integer = @intCast(self.exported) });
+        try root.put(a, "skipped", .{ .integer = @intCast(self.skipped) });
+        try root.put(a, "failed", .{ .integer = @intCast(self.failed) });
+        try root.put(a, "attachments", .{ .integer = @intCast(self.attachments) });
+        try root.put(a, "titled", .{ .integer = @intCast(self.titled) });
+        try root.put(a, "noise_filtered", .{ .integer = @intCast(self.noise_filtered) });
+        try root.put(a, "collapsed", .{ .integer = @intCast(self.collapsed) });
+        try root.put(a, "merged", .{ .integer = @intCast(self.merged) });
+        try root.put(a, "duplicates", .{ .integer = @intCast(self.duplicates) });
+        try root.put(a, "conflicts", .{ .integer = @intCast(self.conflicts) });
+        try root.put(a, "elapsed_seconds", .{ .float = @as(f64, @floatFromInt(elapsed_ns)) / @as(f64, std.time.ns_per_s) });
+        try root.put(a, "eta_seconds", .{ .float = @as(f64, @floatFromInt(eta_ns)) / @as(f64, std.time.ns_per_s) });
         const value: std.json.Value = .{ .object = root };
-        const bytes = try std.json.Stringify.valueAlloc(self.a, value, .{ .whitespace = .indent_2 });
-        const path = try std.fs.path.join(self.a, &.{ self.output, "state.json" });
+        const bytes = try std.json.Stringify.valueAlloc(a, value, .{ .whitespace = .indent_2 });
+        const path = try std.fs.path.join(a, &.{ self.output, "state.json" });
         try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = bytes });
     }
 
+    fn write(self: *Progress) !void {
+        self.mutex.lock(self.io) catch return;
+        defer self.mutex.unlock(self.io);
+        try self.writeUnlocked();
+    }
+
     fn maybe(self: *Progress) !void {
-        if (now(self.io) - self.last_ns >= self.cadence_ns) try self.write();
+        self.mutex.lock(self.io) catch return;
+        defer self.mutex.unlock(self.io);
+        if (now(self.io) - self.last_ns >= self.cadence_ns) try self.writeUnlocked();
+    }
+
+    fn heartbeat(self: *Progress) void {
+        while (self.running.load(.seq_cst)) {
+            std.Io.sleep(self.io, .{ .nanoseconds = @as(i128, 10) * std.time.ns_per_s }, .real) catch return;
+            if (!self.running.load(.seq_cst)) break;
+            self.maybe() catch {};
+        }
+    }
+
+    fn start(self: *Progress) !std.Thread {
+        return std.Thread.spawn(.{}, Progress.heartbeat, .{self});
+    }
+
+    fn stop(self: *Progress) void {
+        self.running.store(false, .seq_cst);
     }
 };
 
@@ -262,6 +289,11 @@ fn mainInner(init: std.process.Init) !u8 {
     try std.Io.Dir.cwd().createDirPath(io, output);
     var progress = Progress{ .a = a, .io = io, .output = output, .started_ns = Progress.now(io), .last_ns = Progress.now(io) };
     try progress.write();
+    const progress_thread = try progress.start();
+    defer {
+        progress.stop();
+        progress_thread.join();
+    }
 
     var sessions: std.ArrayList(model.Session) = .empty;
     var stats = readers.Stats{};
