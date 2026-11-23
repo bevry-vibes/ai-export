@@ -109,7 +109,8 @@ fn ingestChatGpt(a: std.mem.Allocator, io: std.Io, value: std.json.Value, source
         if (model.jint(obj, "create_time")) |secs| {
             time_raw = try std.fmt.allocPrint(a, "{d}", .{@as(u64, @intCast(secs)) * 1000});
         }
-        var messages: std.ArrayList(Message) = .empty;
+        const ChatMsg = struct { time: f64, role: []const u8, content: []const u8 };
+        var collected: std.ArrayList(ChatMsg) = .empty;
         if (obj.get("mapping")) |mapping| {
             if (mapping == .object) {
                 var it = mapping.object.iterator();
@@ -126,10 +127,28 @@ fn ingestChatGpt(a: std.mem.Allocator, io: std.Io, value: std.json.Value, source
                     if (content != .object) continue;
                     const parts = content.object.get("parts") orelse continue;
                     const text = try normalize.contentText(a, parts, 0);
-                    if (text.len > 0) try messages.append(a, .{ .role = role, .content = text });
+                    if (text.len == 0) continue;
+                    var created: f64 = 0;
+                    if (message.object.get("create_time")) |ct| {
+                        created = switch (ct) {
+                            .float => |f| f,
+                            .integer => |n| @floatFromInt(n),
+                            else => 0,
+                        };
+                    }
+                    try collected.append(a, .{ .time = created, .role = role, .content = text });
                 }
             }
         }
+        // The export's mapping object is not chronological; sort by the
+        // message's own create_time before emitting the transcript.
+        std.mem.sort(ChatMsg, collected.items, {}, struct {
+            fn lessThan(_: void, x: ChatMsg, y: ChatMsg) bool {
+                return x.time < y.time;
+            }
+        }.lessThan);
+        var messages: std.ArrayList(Message) = .empty;
+        for (collected.items) |m| try messages.append(a, .{ .role = m.role, .content = m.content });
         try addSession(a, io, out, stats, source, "chatgpt", id, title, time_raw, try messages.toOwnedSlice(a));
     }
 }
