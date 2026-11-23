@@ -49,13 +49,26 @@ fn writeErr(io: std.Io, text: []const u8) void {
 }
 
 fn isAgentDetectNoise(a: std.mem.Allocator, session: model.Session) bool {
+    const team_session = std.mem.startsWith(u8, session.team, "team-");
+    const fixture_prompts = [_][]const u8{
+        "in the current working directory and report the result",
+        "reply with the single word: pong",
+        "reply with exactly: rxok",
+        "translate humanist to indonesian",
+        "translate humanist into indonesian",
+    };
     for (session.messages) |message| {
         if (!std.mem.eql(u8, message.role, "user")) continue;
-        const lowered = std.ascii.allocLowerString(a, message.content) catch return false;
-        return std.mem.indexOf(u8, lowered, "in the current working directory and report the result") != null and
-            std.mem.indexOf(u8, lowered, "fixtures capture") != null;
+        const lowered = std.ascii.allocLowerString(a, message.content) catch continue;
+        for (fixture_prompts) |needle| {
+            if (std.mem.indexOf(u8, lowered, needle) != null) return true;
+        }
+        if (team_session and std.mem.indexOf(u8, lowered, "skill document (follow it in full)") != null) return true;
+        break;
     }
-    return false;
+    // Cline team sub-sessions spawned by agent-detect's fixture harness all
+    // carry a unique `team-*` id and a throwaway temp working directory.
+    return team_session and std.mem.indexOf(u8, session.cwd, "/T/tmp") != null;
 }
 
 pub fn main(init: std.process.Init) u8 {

@@ -32,44 +32,13 @@ pub const Writer = struct {
         defer dir.close(self.io);
         var it = dir.iterate();
         while (it.next(self.io) catch null) |entry| {
+            // The exports catalogue is source data, not a generated harness
+            // export — keep it. Everything else is regenerated from scratch.
+            if (std.mem.eql(u8, entry.name, "exports")) continue;
             const path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.output, entry.name });
             switch (entry.kind) {
-                .file => {
-                    if (std.mem.endsWith(u8, entry.name, ".md") or
-                        std.mem.endsWith(u8, entry.name, ".json") or
-                        std.mem.startsWith(u8, entry.name, "duplicates") or
-                        std.mem.startsWith(u8, entry.name, "conflicts") or
-                        std.mem.startsWith(u8, entry.name, ".ai-export"))
-                    {
-                        std.Io.Dir.cwd().deleteFile(self.io, path) catch {};
-                    }
-                },
-                .directory => {
-                    if (std.mem.eql(u8, entry.name, "attachments")) {
-                        std.Io.Dir.cwd().deleteTree(self.io, path) catch {};
-                        continue;
-                    }
-                    var harness_dir = std.Io.Dir.cwd().openDir(self.io, path, .{ .iterate = true }) catch continue;
-                    var harness_it = harness_dir.iterate();
-                    while (harness_it.next(self.io) catch null) |child| {
-                        const child_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ path, child.name });
-                        switch (child.kind) {
-                            .file => {
-                                if (std.mem.endsWith(u8, child.name, ".md") or std.mem.endsWith(u8, child.name, ".json")) {
-                                    std.Io.Dir.cwd().deleteFile(self.io, child_path) catch {};
-                                }
-                            },
-                            .directory => {
-                                if (std.mem.eql(u8, child.name, "attachments") or std.mem.eql(u8, child.name, "json")) {
-                                    std.Io.Dir.cwd().deleteTree(self.io, child_path) catch {};
-                                }
-                            },
-                            else => {},
-                        }
-                    }
-                    harness_dir.close(self.io);
-                    std.Io.Dir.cwd().deleteDir(self.io, path) catch {};
-                },
+                .file => std.Io.Dir.cwd().deleteFile(self.io, path) catch {},
+                .directory => std.Io.Dir.cwd().deleteTree(self.io, path) catch {},
                 else => {},
             }
         }

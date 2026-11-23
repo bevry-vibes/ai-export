@@ -340,6 +340,7 @@ fn collectFile(a: std.mem.Allocator, io: std.Io, spec: FileSpec, path: []const u
         .provider = try a.dupe(u8, provider),
         .model = try a.dupe(u8, model_name),
         .cwd = try a.dupe(u8, cwd),
+        .team = if (meta) |obj| (model.jstr(obj, "team_name") orelse "") else "",
         .source_path = try a.dupe(u8, path),
         .messages = try messages.toOwnedSlice(a),
         .attachments = try attachments.toOwnedSlice(a),

@@ -29,6 +29,7 @@ pub const Session = struct {
     provider: []const u8 = "",
     model: []const u8 = "",
     cwd: []const u8 = "",
+    team: []const u8 = "",
     source_path: []const u8,
     messages: []const Message = &.{},
     attachments: []const Attachment = &.{},
