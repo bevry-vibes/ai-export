@@ -374,8 +374,6 @@ fn mainInner(init: std.process.Init) !u8 {
     // Known cross-harness copies: only byte-identical (normalised) duplicates
     // are quarantined. Variants and extended copies stay in their harness
     // directory with a link back to the original transcript.
-    var quarantined: usize = 0;
-    var linked: usize = 0;
     for (report.duplicates) |dup| {
         if (!std.mem.eql(u8, dup.confidence, "high")) continue;
         const copy_id = if (std.mem.eql(u8, dup.copy_harness, dup.a_harness)) dup.a_id else dup.b_id;
@@ -390,12 +388,15 @@ fn mainInner(init: std.process.Init) !u8 {
         const o = original orelse continue;
         if (std.mem.eql(u8, dup.kind, "exact")) {
             c.quarantined = true;
-            quarantined += 1;
-        } else {
+        } else if (c.link_to.len == 0) {
             const stem = try render.sessionStem(a, o.*);
             c.link_to = try std.fmt.allocPrint(a, "[{s}](../{s}/{s}.md)", .{ o.title, o.harness, stem });
-            linked += 1;
         }
+    }
+    var quarantined: usize = 0;
+    var linked: usize = 0;
+    for (sessions.items) |session| {
+        if (session.quarantined) quarantined += 1 else if (session.link_to.len > 0) linked += 1;
     }
 
     var writer = if (dry_run) null else try render.Writer.init(a, io, output, purge);
