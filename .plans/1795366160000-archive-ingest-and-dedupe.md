@@ -42,7 +42,7 @@ Archives supplied:
 
 ### Catalogue
 
-- Original archives are copied (never moved) into `~/Documents/AI/exports/<timestamp> - <harness>/`, preserving internal structure. Generic names (`data.json`, `conversations.json`) get a `<timestamp> - <harness> - ` prefix. Multi-file exports keep their files together.
+- Original archives are relocated into `~/Documents/AI/archives/<timestamp> - <harness>/`, preserving internal structure. Generic names (`data.json`, `conversations.json`) get a `<timestamp> - <harness> - ` prefix. Multi-file exports keep their files together.
 
 ### "Bad data" filter
 

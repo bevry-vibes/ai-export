@@ -25,16 +25,16 @@ pub const Writer = struct {
         return self;
     }
 
-    /// Every run is a full regeneration: wipe previous exports so a format
+    /// Every run is a full regeneration: wipe previous harness exports so a format
     /// change never leaves two generations of files side by side.
     fn clean(self: *Writer) !void {
         var dir = std.Io.Dir.cwd().openDir(self.io, self.output, .{ .iterate = true }) catch return;
         defer dir.close(self.io);
         var it = dir.iterate();
         while (it.next(self.io) catch null) |entry| {
-            // The exports catalogue is source data, not a generated harness
+            // The archives catalogue is source data, not a generated harness
             // export — keep it. Everything else is regenerated from scratch.
-            if (std.mem.eql(u8, entry.name, "exports")) continue;
+            if (std.mem.eql(u8, entry.name, "archives")) continue;
             const path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.output, entry.name });
             switch (entry.kind) {
                 .file => std.Io.Dir.cwd().deleteFile(self.io, path) catch {},

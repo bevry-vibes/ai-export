@@ -28,6 +28,8 @@ pub const usage =
     \\  --archive=<path>   ingest an external export (repeatable)
     \\  --kagi             fetch Kagi Assistant chats (needs KAGI_SESSION)
     \\  --kagi-share=<id>  fetch one public Kagi share
+    \\  --import-archives   also import every archive under <output>/archives
+    \\  --no-title-generation  skip fm respond title summaries
     \\  --include-noise    keep agent-detect fixtures-capture sessions
     \\  --dry-run          discover and report, write nothing
     \\  --version          print the version
@@ -46,6 +48,49 @@ fn writeOut(io: std.Io, text: []const u8) void {
 
 fn writeErr(io: std.Io, text: []const u8) void {
     std.Io.File.stderr().writeStreamingAll(io, text) catch {};
+}
+
+fn capture(a: std.mem.Allocator, io: std.Io, argv: []const []const u8) ![]u8 {
+    var child = std.process.spawn(io, .{ .argv = argv, .stdout = .pipe, .stderr = .ignore }) catch return error.TitleGeneratorUnavailable;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(a);
+    var buf: [4096]u8 = undefined;
+    var reader = child.stdout.?.reader(io, &buf);
+    while (true) {
+        var chunk: [4096]u8 = undefined;
+        const n = reader.interface.readSliceShort(&chunk) catch break;
+        if (n == 0) break;
+        try out.appendSlice(a, chunk[0..n]);
+    }
+    const term = child.wait(io) catch return error.TitleGeneratorUnavailable;
+    switch (term) {
+        .exited => |code| if (code != 0) return error.TitleGeneratorUnavailable,
+        else => return error.TitleGeneratorUnavailable,
+    }
+    return out.toOwnedSlice(a);
+}
+
+fn poorTitle(title: []const u8) bool {
+    if (title.len > 55) return true;
+    if (std.mem.indexOf(u8, title, "...") != null or std.mem.indexOf(u8, title, "…") != null) return true;
+    if (std.mem.startsWith(u8, title, "New session -")) return true;
+    return false;
+}
+
+fn generateTitle(a: std.mem.Allocator, io: std.Io, cache: *std.StringHashMap([]const u8), session: model.Session) !?[]const u8 {
+    if (!poorTitle(session.title)) return null;
+    if (cache.get(session.id)) |cached| return cached;
+    const initial = if (session.messages.len > 0) session.messages[0].content else "";
+    if (initial.len == 0) return null;
+    const snippet = initial[0..@min(initial.len, 600)];
+    const prompt = try std.fmt.allocPrint(a, "Summarise the following into a single-line title, compatible with APFS filesystem:\n\n{s}", .{snippet});
+    const raw = capture(a, io, &.{ "fm", "respond", "--no-stream", "--greedy", prompt }) catch return null;
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n\"'`");
+    if (trimmed.len == 0) return null;
+    const title = try model.humanTitle(a, trimmed);
+    if (title.len == 0) return null;
+    try cache.put(try a.dupe(u8, session.id), title);
+    return title;
 }
 
 fn isAgentDetectNoise(a: std.mem.Allocator, session: model.Session) bool {
@@ -75,6 +120,8 @@ fn mainInner(init: std.process.Init) !u8 {
     var only: []const u8 = "";
     var dry_run = false;
     var want_kagi = false;
+    var import_archives = false;
+    var title_generation = true;
     var include_noise = false;
     var archive_paths: std.ArrayList([]const u8) = .empty;
     var share_ids: std.ArrayList([]const u8) = .empty;
@@ -93,6 +140,10 @@ fn mainInner(init: std.process.Init) !u8 {
             want_kagi = true;
         } else if (std.mem.startsWith(u8, arg, "--kagi-share=")) {
             try share_ids.append(a, arg["--kagi-share=".len..]);
+        } else if (std.mem.eql(u8, arg, "--import-archives")) {
+            import_archives = true;
+        } else if (std.mem.eql(u8, arg, "--no-title-generation")) {
+            title_generation = false;
         } else if (std.mem.eql(u8, arg, "--include-noise")) {
             include_noise = true;
         } else if (std.mem.eql(u8, arg, "--dry-run")) {
@@ -129,7 +180,7 @@ fn mainInner(init: std.process.Init) !u8 {
         }
     };
 
-    if (want_kagi) {
+    if (want_kagi or (import_archives and env.get("KAGI_SESSION") != null)) {
         kagi.collectKagi(a, io, env, &sessions, &stats) catch |err| {
             writeErr(io, "kagi fetch failed: ");
             writeErr(io, @errorName(err));
@@ -139,6 +190,15 @@ fn mainInner(init: std.process.Init) !u8 {
     for (share_ids.items) |id| {
         kagi.collectShare(a, io, id, &sessions, &stats) catch |err| {
             writeErr(io, "kagi share failed: ");
+            writeErr(io, @errorName(err));
+            writeErr(io, "\n");
+        };
+    }
+
+    if (import_archives) {
+        const archives_root = try std.fs.path.join(a, &.{ output, "archives" });
+        archives.collectFromArchives(a, io, archives_root, &sessions, &stats) catch |err| {
+            writeErr(io, "exports import failed: ");
             writeErr(io, @errorName(err));
             writeErr(io, "\n");
         };
@@ -158,7 +218,7 @@ fn mainInner(init: std.process.Init) !u8 {
 
     var report = dedupe.Result{};
     if (archive_paths.items.len > 0 or want_kagi or share_ids.items.len > 0) {
-        const catalog_root = try std.fs.path.join(a, &.{ output, "exports" });
+        const catalog_root = try std.fs.path.join(a, &.{ output, "archives" });
         if (!dry_run) try std.Io.Dir.cwd().createDirPath(io, catalog_root);
         archives.collectArchives(a, io, archive_paths.items, &sessions, &stats, catalog_root, !dry_run) catch |err| {
             writeErr(io, "archive ingest failed: ");
@@ -167,6 +227,39 @@ fn mainInner(init: std.process.Init) !u8 {
         };
     }
     report = try dedupe.process(a, &sessions);
+
+    const archives_root = try std.fs.path.join(a, &.{ output, "archives" });
+    if (!dry_run) try std.Io.Dir.cwd().createDirPath(io, archives_root);
+    var title_cache = std.StringHashMap([]const u8).init(a);
+    const cache_path = try std.fs.path.join(a, &.{ archives_root, ".title-cache.tsv" });
+    if (std.Io.Dir.cwd().readFileAlloc(io, cache_path, a, @enumFromInt(@as(u64, 4 << 20)))) |bytes| {
+        var lines = std.mem.splitScalar(u8, bytes, '\n');
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+            var fields = std.mem.splitScalar(u8, line, '\t');
+            const id = fields.next() orelse continue;
+            const title = fields.next() orelse continue;
+            try title_cache.put(try a.dupe(u8, id), try a.dupe(u8, title));
+        }
+    } else |_| {}
+    var titled: usize = 0;
+    if (title_generation) {
+        for (sessions.items) |*session| {
+            if (try generateTitle(a, io, &title_cache, session.*)) |title| {
+                session.title = title;
+                titled += 1;
+            }
+        }
+    }
+    if (!dry_run) {
+        var cache_out: std.ArrayList(u8) = .empty;
+        var cit = title_cache.iterator();
+        while (cit.next()) |entry| {
+            const line = try std.fmt.allocPrint(a, "{s}\t{s}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+            try cache_out.appendSlice(a, line);
+        }
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = cache_path, .data = cache_out.items });
+    }
 
     var writer = if (dry_run) null else try render.Writer.init(a, io, output);
     for (sessions.items) |session| {
@@ -177,8 +270,8 @@ fn mainInner(init: std.process.Init) !u8 {
     if (writer != null) try dedupe.writeReports(a, io, output, report);
 
     const summary = try std.fmt.allocPrint(a,
-        "scanned: {d} sessions · noise filtered: {d} · exported: {d} · skipped: {d} · failed: {d} · attachments: {d} · collapsed: {d} · merged: {d} · cross-harness duplicates: {d} · conflicts: {d}\noutput: {s}\n",
-        .{ stats.scanned, noise_filtered, if (writer) |w| w.written else 0, stats.skipped, stats.failed, if (writer) |w| w.attachment_count else 0, report.collapsed, report.merged, report.duplicates.len, report.conflicts.len, output },
+        "scanned: {d} sessions · noise filtered: {d} · titled: {d} · exported: {d} · skipped: {d} · failed: {d} · attachments: {d} · collapsed: {d} · merged: {d} · cross-harness duplicates: {d} · conflicts: {d}\noutput: {s}\n",
+        .{ stats.scanned, noise_filtered, titled, if (writer) |w| w.written else 0, stats.skipped, stats.failed, if (writer) |w| w.attachment_count else 0, report.collapsed, report.merged, report.duplicates.len, report.conflicts.len, output },
     );
     writeOut(io, summary);
     return 0;

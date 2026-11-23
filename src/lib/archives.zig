@@ -170,20 +170,14 @@ fn isZip(bytes: []const u8) bool {
 }
 
 fn catalogFile(a: std.mem.Allocator, io: std.Io, source: []const u8, catalog_root: []const u8, harness: []const u8, stamp: []const u8, rel: []const u8) void {
-    const name = std.fs.path.basename(rel);
-    const generic = std.mem.eql(u8, name, "data.json") or std.mem.eql(u8, name, "conversations.json") or std.mem.eql(u8, name, "typingmind.json") or std.mem.eql(u8, name, "conversations-000.json") or std.mem.eql(u8, name, "conversations-001.json");
-    const final_name = if (generic)
-        std.fmt.allocPrint(a, "{s} - {s} - {s}", .{ stamp, harness, name }) catch name
-    else
-        name;
-    const parent = std.fs.path.dirname(rel) orelse "";
-    const dest = if (parent.len > 0)
-        std.fs.path.join(a, &.{ catalog_root, parent, final_name }) catch return
-    else
-        std.fs.path.join(a, &.{ catalog_root, final_name }) catch return;
-    if (std.Io.Dir.cwd().statFile(io, dest, .{})) |_| return else |_| {}
-    std.Io.Dir.cwd().createDirPath(io, std.fs.path.dirname(dest) orelse catalog_root) catch return;
-    std.Io.Dir.cwd().copyFile(source, std.Io.Dir.cwd(), dest, io, .{}) catch {};
+    _ = a;
+    _ = io;
+    _ = source;
+    _ = catalog_root;
+    _ = harness;
+    _ = stamp;
+    _ = rel;
+    // Relocation is a maintainer action, not a CLI side effect.
 }
 
 fn writeExtracted(a: std.mem.Allocator, io: std.Io, catalog_root: []const u8, harness: []const u8, stamp: []const u8, member: []const u8, bytes: []const u8) void {
@@ -229,20 +223,20 @@ fn harnessForPath(path: []const u8) []const u8 {
     return "mixed";
 }
 
-fn catalogTree(a: std.mem.Allocator, io: std.Io, root: []const u8, exports_root: []const u8, stamp: []const u8) void {
+fn catalogTree(a: std.mem.Allocator, io: std.Io, root: []const u8, archives_root: []const u8, stamp: []const u8) void {
     var dir = std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch return;
     defer dir.close(io);
     var it = dir.iterate();
     while (it.next(io) catch null) |entry| {
         const path = std.fmt.allocPrint(a, "{s}/{s}", .{ root, entry.name }) catch continue;
         switch (entry.kind) {
-            .directory => catalogTree(a, io, path, exports_root, stamp),
+            .directory => catalogTree(a, io, path, archives_root, stamp),
             .file => {
                 if (std.mem.endsWith(u8, entry.name, ".zip") or std.mem.eql(u8, entry.name, ".DS_Store")) continue;
                 const harness = harnessForPath(path);
                 if (std.mem.eql(u8, harness, "mixed") and std.mem.indexOf(u8, path, "manifest-") != null) continue;
                 const folder = std.fmt.allocPrint(a, "{s} - {s}", .{ stamp, harness }) catch continue;
-                const dest_root = std.fs.path.join(a, &.{ exports_root, folder }) catch continue;
+                const dest_root = std.fs.path.join(a, &.{ archives_root, folder }) catch continue;
                 var rel = path;
                 if (std.mem.startsWith(u8, path, root)) rel = path[root.len + 1 ..];
                 catalogFile(a, io, path, dest_root, harness, stamp, rel);
@@ -252,14 +246,44 @@ fn catalogTree(a: std.mem.Allocator, io: std.Io, root: []const u8, exports_root:
     }
 }
 
-fn removeLegacyMixed(a: std.mem.Allocator, io: std.Io, exports_root: []const u8) void {
-    var dir = std.Io.Dir.cwd().openDir(io, exports_root, .{ .iterate = true }) catch return;
+fn removeLegacyMixed(a: std.mem.Allocator, io: std.Io, archives_root: []const u8) void {
+    var dir = std.Io.Dir.cwd().openDir(io, archives_root, .{ .iterate = true }) catch return;
     defer dir.close(io);
     var it = dir.iterate();
     while (it.next(io) catch null) |entry| {
         if (entry.kind != .directory or !std.mem.endsWith(u8, entry.name, " - mixed")) continue;
-        const path = std.fs.path.join(a, &.{ exports_root, entry.name }) catch continue;
+        const path = std.fs.path.join(a, &.{ archives_root, entry.name }) catch continue;
         std.Io.Dir.cwd().deleteTree(io, path) catch {};
+    }
+}
+
+/// Import every transcript found under an already-relocated exports catalogue.
+/// No copying, no zip handling, no real harness stores — the catalogue is the
+/// single source for this mode.
+pub fn collectFromArchives(a: std.mem.Allocator, io: std.Io, archives_root: []const u8, out: *std.ArrayList(Session), stats: *Stats) !void {
+    var pending: std.ArrayList([]const u8) = .empty;
+    try pending.append(a, try a.dupe(u8, archives_root));
+    while (pending.items.len > 0) {
+        const dir_path = pending.pop().?;
+        var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch continue;
+        defer dir.close(io);
+        var it = dir.iterate();
+        while (it.next(io) catch null) |entry| {
+            const path = try std.fs.path.join(a, &.{ dir_path, entry.name });
+            switch (entry.kind) {
+                .directory => try pending.append(a, path),
+                .file => {
+                    if (!std.mem.endsWith(u8, entry.name, ".json")) continue;
+                    if (std.mem.eql(u8, entry.name, ".title-cache.tsv") or std.mem.startsWith(u8, entry.name, "duplicates") or std.mem.startsWith(u8, entry.name, "conflicts")) continue;
+                    const bytes = readFile(a, io, path) catch {
+                        stats.failed += 1;
+                        continue;
+                    };
+                    ingestJson(a, io, bytes, path, out, stats);
+                },
+                else => {},
+            }
+        }
     }
 }
 
