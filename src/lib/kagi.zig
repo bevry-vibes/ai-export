@@ -160,7 +160,7 @@ fn addBranch(a: std.mem.Allocator, io: std.Io, fetch: *Fetch, branch: std.json.V
             try std.fmt.allocPrint(a, "/branches/{s}/messages?limit=100", .{branch_id});
         const revision = model.firstTime(branch.object);
         const cache_key = try std.fmt.allocPrint(a, "messages-{s}-{s}-{d}.json", .{ branch_id, if (revision.len > 0) revision else "none", @as(u64, @intCast(branch.object.count())) });
-        const bytes = fetch.getCached(try std.fmt.allocPrint(a, "https://assistant.kagi.com{s}", .{path}), cache_key, try std.fmt.allocPrint(a, "messages-{s}-", .{branch_id})) catch break;
+        const bytes = fetch.getCached(path, cache_key, try std.fmt.allocPrint(a, "messages-{s}-", .{branch_id})) catch break;
         const value = parse(a, bytes) orelse break;
         const page_items = nestedItems(value, "messages", "items");
         if (page_items.len == 0) break;
