@@ -26,7 +26,10 @@ const Fetch = struct {
     cookie: ?[]const u8,
 
     fn get(self: *Fetch, path: []const u8) ![]u8 {
-        const url = try std.fmt.allocPrint(self.a, "{s}{s}", .{ api, path });
+        const url = if (std.mem.startsWith(u8, path, "http://") or std.mem.startsWith(u8, path, "https://"))
+            path
+        else
+            try std.fmt.allocPrint(self.a, "{s}{s}", .{ api, path });
         var headers: [1]std.http.Header = undefined;
         var headers_slice: []const std.http.Header = &.{};
         if (self.cookie) |token| {
@@ -67,12 +70,39 @@ fn nestedItems(value: std.json.Value, outer: []const u8, inner: []const u8) []co
     return &.{};
 }
 
-fn addMessages(a: std.mem.Allocator, items: []const std.json.Value, out: *std.ArrayList(model.Message)) !void {
+fn fetchAttachments(a: std.mem.Allocator, fetch: ?*Fetch, item: std.json.Value, out: *std.ArrayList(model.Attachment)) !void {
+    const f = fetch orelse return;
+    if (item != .object) return;
+    const atts = item.object.get("attachments") orelse return;
+    if (atts != .array) return;
+    for (atts.array.items) |att| {
+        if (att != .object) continue;
+        const rel = model.jstr(att.object, "url") orelse continue;
+        const filename = model.jstr(att.object, "filename") orelse model.jstr(att.object, "original_filename") orelse "attachment";
+        const mime = model.jstr(att.object, "mime_type") orelse "";
+        var ext = std.fs.path.extension(filename);
+        if (ext.len > 1) ext = ext[1..] else if (std.mem.indexOfScalar(u8, mime, '/')) |slash| ext = mime[slash + 1 ..] else ext = "bin";
+        const url = if (std.mem.startsWith(u8, rel, "/"))
+            try std.fmt.allocPrint(a, "https://assistant.kagi.com{s}", .{rel})
+        else
+            rel;
+        const bytes = f.get(url) catch continue;
+        try out.append(a, .{
+            .title = try a.dupe(u8, model.jstr(att.object, "original_filename") orelse filename),
+            .source_path = url,
+            .extension = try a.dupe(u8, ext),
+            .data = bytes,
+        });
+    }
+}
+
+fn addMessages(a: std.mem.Allocator, fetch: ?*Fetch, items: []const std.json.Value, out: *std.ArrayList(model.Message), attachments: *std.ArrayList(model.Attachment)) !void {
     for (items) |item| {
         if (item != .object) continue;
         var messages: std.ArrayList(model.Message) = .empty;
         try normalize.collectMessages(a, item, &messages, 0);
         for (messages.items) |m| try out.append(a, m);
+        try fetchAttachments(a, fetch, item, attachments);
     }
 }
 
@@ -81,6 +111,7 @@ fn addBranch(a: std.mem.Allocator, io: std.Io, fetch: *Fetch, branch: std.json.V
     const branch_id = model.idOf(branch.object);
     if (branch_id.len == 0) return;
     var messages: std.ArrayList(model.Message) = .empty;
+    var attachments: std.ArrayList(model.Attachment) = .empty;
     var before: []const u8 = "";
     var page: usize = 0;
     while (page < 20) : (page += 1) {
@@ -92,7 +123,7 @@ fn addBranch(a: std.mem.Allocator, io: std.Io, fetch: *Fetch, branch: std.json.V
         const value = parse(a, bytes) orelse break;
         const page_items = nestedItems(value, "messages", "items");
         if (page_items.len == 0) break;
-        try addMessages(a, page_items, &messages);
+        try addMessages(a, fetch, page_items, &messages, &attachments);
         var oldest: []const u8 = "";
         for (page_items) |item| {
             if (item != .object) continue;
@@ -121,6 +152,7 @@ fn addBranch(a: std.mem.Allocator, io: std.Io, fetch: *Fetch, branch: std.json.V
         .stamp = try model.stamp(a, io, model.firstTime(branch.object)),
         .source_path = try std.fmt.allocPrint(a, "kagi://branch/{s}", .{branch_id}),
         .messages = try messages.toOwnedSlice(a),
+        .attachments = try attachments.toOwnedSlice(a),
     });
 }
 
@@ -180,7 +212,8 @@ pub fn collectShare(a: std.mem.Allocator, io: std.Io, share_uuid: []const u8, ou
     const conv = value.object.get("conversation") orelse return;
     const title = if (conv == .object) model.titleOf(conv.object) else "";
     var messages: std.ArrayList(model.Message) = .empty;
-    try addMessages(a, itemsOf(value, "messages"), &messages);
+    var attachments: std.ArrayList(model.Attachment) = .empty;
+    try addMessages(a, &fetch, itemsOf(value, "messages"), &messages, &attachments);
     if (messages.items.len == 0) {
         stats.skipped += 1;
         return;
@@ -193,5 +226,6 @@ pub fn collectShare(a: std.mem.Allocator, io: std.Io, share_uuid: []const u8, ou
         .stamp = try model.stamp(a, io, if (conv == .object) model.firstTime(conv.object) else ""),
         .source_path = try std.fmt.allocPrint(a, "kagi://share/{s}", .{share_uuid}),
         .messages = try messages.toOwnedSlice(a),
+        .attachments = try attachments.toOwnedSlice(a),
     });
 }

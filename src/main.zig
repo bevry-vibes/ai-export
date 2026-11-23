@@ -28,6 +28,7 @@ pub const usage =
     \\  --archive=<path>   ingest an external export (repeatable)
     \\  --kagi             fetch Kagi Assistant chats (needs KAGI_SESSION)
     \\  --kagi-share=<id>  fetch one public Kagi share
+    \\  --include-noise    keep agent-detect fixtures-capture sessions
     \\  --dry-run          discover and report, write nothing
     \\  --version          print the version
     \\  --help             show this help
@@ -47,6 +48,16 @@ fn writeErr(io: std.Io, text: []const u8) void {
     std.Io.File.stderr().writeStreamingAll(io, text) catch {};
 }
 
+fn isAgentDetectNoise(a: std.mem.Allocator, session: model.Session) bool {
+    for (session.messages) |message| {
+        if (!std.mem.eql(u8, message.role, "user")) continue;
+        const lowered = std.ascii.allocLowerString(a, message.content) catch return false;
+        return std.mem.indexOf(u8, lowered, "in the current working directory and report the result") != null and
+            std.mem.indexOf(u8, lowered, "fixtures capture") != null;
+    }
+    return false;
+}
+
 pub fn main(init: std.process.Init) u8 {
     return mainInner(init) catch |err| {
         writeErr(init.io, @errorName(err));
@@ -64,6 +75,7 @@ fn mainInner(init: std.process.Init) !u8 {
     var only: []const u8 = "";
     var dry_run = false;
     var want_kagi = false;
+    var include_noise = false;
     var archive_paths: std.ArrayList([]const u8) = .empty;
     var share_ids: std.ArrayList([]const u8) = .empty;
     var args = std.process.Args.Iterator.initAllocator(init.minimal.args, a) catch return 1;
@@ -81,6 +93,8 @@ fn mainInner(init: std.process.Init) !u8 {
             want_kagi = true;
         } else if (std.mem.startsWith(u8, arg, "--kagi-share=")) {
             try share_ids.append(a, arg["--kagi-share=".len..]);
+        } else if (std.mem.eql(u8, arg, "--include-noise")) {
+            include_noise = true;
         } else if (std.mem.eql(u8, arg, "--dry-run")) {
             dry_run = true;
         } else if (std.mem.startsWith(u8, arg, "--output=")) {
@@ -130,6 +144,18 @@ fn mainInner(init: std.process.Init) !u8 {
         };
     }
 
+    var noise_filtered: usize = 0;
+    if (!include_noise) {
+        var i: usize = sessions.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (isAgentDetectNoise(a, sessions.items[i])) {
+                _ = sessions.orderedRemove(i);
+                noise_filtered += 1;
+            }
+        }
+    }
+
     var report = dedupe.Result{};
     if (archive_paths.items.len > 0 or want_kagi or share_ids.items.len > 0) {
         const catalog_root = try std.fs.path.join(a, &.{ output, "exports" });
@@ -151,8 +177,8 @@ fn mainInner(init: std.process.Init) !u8 {
     if (writer != null) try dedupe.writeReports(a, io, output, report);
 
     const summary = try std.fmt.allocPrint(a,
-        "scanned: {d} sessions · exported: {d} · skipped: {d} · failed: {d} · attachments: {d} · collapsed: {d} · merged: {d} · cross-harness duplicates: {d} · conflicts: {d}\noutput: {s}\n",
-        .{ stats.scanned, if (writer) |w| w.written else 0, stats.skipped, stats.failed, if (writer) |w| w.attachment_count else 0, report.collapsed, report.merged, report.duplicates.len, report.conflicts.len, output },
+        "scanned: {d} sessions · noise filtered: {d} · exported: {d} · skipped: {d} · failed: {d} · attachments: {d} · collapsed: {d} · merged: {d} · cross-harness duplicates: {d} · conflicts: {d}\noutput: {s}\n",
+        .{ stats.scanned, noise_filtered, if (writer) |w| w.written else 0, stats.skipped, stats.failed, if (writer) |w| w.attachment_count else 0, report.collapsed, report.merged, report.duplicates.len, report.conflicts.len, output },
     );
     writeOut(io, summary);
     return 0;

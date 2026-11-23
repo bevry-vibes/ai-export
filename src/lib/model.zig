@@ -18,6 +18,7 @@ pub const Attachment = struct {
     title: []const u8 = "attachment",
     source_path: []const u8 = "",
     extension: []const u8 = "bin",
+    data: []const u8 = "",
 };
 
 pub const Session = struct {

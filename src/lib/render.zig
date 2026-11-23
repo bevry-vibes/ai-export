@@ -37,6 +37,8 @@ pub const Writer = struct {
                 .file => {
                     if (std.mem.endsWith(u8, entry.name, ".md") or
                         std.mem.endsWith(u8, entry.name, ".json") or
+                        std.mem.startsWith(u8, entry.name, "duplicates") or
+                        std.mem.startsWith(u8, entry.name, "conflicts") or
                         std.mem.startsWith(u8, entry.name, ".ai-export"))
                     {
                         std.Io.Dir.cwd().deleteFile(self.io, path) catch {};
@@ -164,7 +166,11 @@ pub const Writer = struct {
             if (!std.fs.path.isAbsolute(source) and session.cwd.len > 0) {
                 resolved = std.fs.path.join(a, &.{ session.cwd, source }) catch source;
             }
-            if (std.Io.Dir.cwd().statFile(self.io, resolved, .{})) |_| {} else |_| continue;
+            const remote = std.mem.startsWith(u8, resolved, "http://") or std.mem.startsWith(u8, resolved, "https://");
+            if (remote and att.data.len == 0) continue;
+            if (!remote) {
+                if (std.Io.Dir.cwd().statFile(self.io, resolved, .{})) |_| {} else |_| continue;
+            }
             const att_title = try model.humanTitle(a, std.fs.path.stem(att.title));
             const name = try std.fmt.allocPrint(a, "{s} - {s} - {s}.{s}", .{ session.stamp, short, att_title, att.extension });
             if (attachments_dir == null) {
@@ -173,7 +179,11 @@ pub const Writer = struct {
                 attachments_dir = dir;
             }
             const dest = try std.fs.path.join(a, &.{ attachments_dir.?, name });
-            std.Io.Dir.cwd().copyFile(resolved, std.Io.Dir.cwd(), dest, self.io, .{}) catch continue;
+            if (remote) {
+                std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = dest, .data = att.data }) catch continue;
+            } else {
+                std.Io.Dir.cwd().copyFile(resolved, std.Io.Dir.cwd(), dest, self.io, .{}) catch continue;
+            }
             try outputs.append(a, dest);
             self.attachment_count += 1;
         }

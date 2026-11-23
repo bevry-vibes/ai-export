@@ -25,7 +25,9 @@ Harness discovery follows [agent-detect](https://github.com/bevry-vibes/agent-de
 ./zig-out/bin/ai-export --version
 ```
 
-Options: `--output=<dir>` changes the destination; `--harness=<id>` limits the run to one harness; `--archive=<path>` ingests an external export (repeatable); `--kagi` fetches Kagi Assistant chats using the `KAGI_SESSION` cookie from the environment; `--kagi-share=<id>` fetches one public Kagi share; `--dry-run` reports without writing; `--help` prints all options.
+Options: `--output=<dir>` changes the destination; `--harness=<id>` limits the run to one harness; `--archive=<path>` ingests an external export (repeatable); `--kagi` fetches Kagi Assistant chats using the `KAGI_SESSION` cookie from the environment; `--kagi-share=<id>` fetches one public Kagi share; `--include-noise` keeps agent-detect fixtures-capture sessions; `--dry-run` reports without writing; `--help` prints all options.
+
+Sessions whose first user prompt is an agent-detect fixtures-capture instruction are filtered out by default. The phrase `in the current working directory and report the result` is used by every capture prompt: the static `capture_prompt` in `src/dev/dev.zig` and the daemon's dynamic absolute-path variant both carry it, and all 547 `<prompt>` invocations in `fixtures/index.json` resolve to one of them.
 
 Every run is a full regeneration. Previous exports under the chosen output directory are wiped first, so a format change never leaves two generations of files side by side.
 
@@ -46,7 +48,7 @@ Every run is a full regeneration. Previous exports under the chosen output direc
 
 The timestamp is the session's own creation time in UTC, rendered as `yyyy-mm-dd hh-mm`. The short id is a stable hash of the source session id. Titles keep human-readable spaces and punctuation; filesystem-hostile characters become spaces.
 
-The `.md` file holds only `### Prompt` and `### Answer` turns. The `.json` file holds all metadata: session id, title, harness, provider, model, working directory, source store, timestamp, attachment records, and every message with its role and time.
+The `.md` file holds only `### Prompt` and `### Answer` turns. The `.json` file holds all metadata: session id, title, harness, provider, model, working directory, source store, timestamp, attachment records, and every message with its role and time. Kagi upload URLs are downloaded with the session cookie and written into the harness's `attachments/` directory; no other harness currently exposes attachment files.
 
 ## Supported stores
 
