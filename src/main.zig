@@ -132,11 +132,17 @@ fn generateTitle(a: std.mem.Allocator, io: std.Io, cache: *std.StringHashMap([]c
 }
 
 fn isAgentDetectNoise(a: std.mem.Allocator, session: model.Session) bool {
+    const patterns = [_][]const u8{
+        "in the current working directory and report the result",
+        "agent-detect-dev fixtures capture",
+        "agent-detect fixtures capture",
+    };
     for (session.messages) |message| {
         if (!std.mem.eql(u8, message.role, "user")) continue;
         const lowered = std.ascii.allocLowerString(a, message.content) catch continue;
-        return std.mem.indexOf(u8, lowered, "in the current working directory and report the result") != null and
-            std.mem.indexOf(u8, lowered, "fixtures capture") != null;
+        for (patterns) |pattern| {
+            if (std.mem.indexOf(u8, lowered, pattern) != null) return true;
+        }
     }
     return false;
 }
