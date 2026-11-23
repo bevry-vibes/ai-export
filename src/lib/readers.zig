@@ -100,13 +100,16 @@ const anythingllm_sessions =
 ;
 
 const anythingllm_messages =
-    \\SELECT c.createdAt AS time, 'user' AS role, c.prompt AS content
+    // ai-sync stored prompt/response pairs in one chat row with separate
+    // created/lastUpdated timestamps. Order by row + role, not by timestamp,
+    // or all prompts sort before all answers.
+    \\SELECT c.id AS ord, 0 AS role_order, c.createdAt AS time, 'user' AS role, c.prompt AS content
     \\FROM workspace_chats c WHERE c.thread_id = {s} AND c.prompt IS NOT NULL
     \\UNION ALL
-    \\SELECT c.lastUpdatedAt AS time, 'assistant' AS role,
+    \\SELECT c.id AS ord, 1 AS role_order, c.lastUpdatedAt AS time, 'assistant' AS role,
     \\  COALESCE(json_extract(c.response,'$.text'), c.response) AS content
     \\FROM workspace_chats c WHERE c.thread_id = {s} AND c.response IS NOT NULL
-    \\ORDER BY time
+    \\ORDER BY ord, role_order
     \\
 ;
 

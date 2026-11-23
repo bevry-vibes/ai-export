@@ -69,6 +69,20 @@ test "dedupe collapses exact within-harness copies and reports cross-harness cop
     try testing.expectEqualStrings("exact", result.duplicates[0].kind);
 }
 
+test "cross-harness duplicates ignore escaping differences" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const m1 = [_]model.Message{ .{ .role = "user", .content = "fix color='' here" }, .{ .role = "assistant", .content = "**done**" }, .{ .role = "user", .content = "more" }, .{ .role = "assistant", .content = "ok" } };
+    const m2 = [_]model.Message{ .{ .role = "user", .content = "fix color=' here" }, .{ .role = "assistant", .content = "done" }, .{ .role = "user", .content = "more" }, .{ .role = "assistant", .content = "ok" } };
+    var sessions: std.ArrayList(model.Session) = .empty;
+    try sessions.append(a, .{ .id = "a", .harness = "typingmind", .title = "A", .stamp = "2024-01-01 00-00", .source_path = "a", .messages = &m1 });
+    try sessions.append(a, .{ .id = "b", .harness = "anythingllm", .title = "A", .stamp = "2024-01-01 00-00", .source_path = "b", .messages = &m2 });
+    const result = try dedupe.process(a, &sessions);
+    try testing.expectEqual(@as(usize, 1), result.duplicates.len);
+    try testing.expectEqualStrings("exact", result.duplicates[0].kind);
+}
+
 test "collectMessages reads role and content pairs" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
