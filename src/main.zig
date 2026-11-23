@@ -297,7 +297,11 @@ fn mainInner(init: std.process.Init) !u8 {
 
     var sessions: std.ArrayList(model.Session) = .empty;
     var stats = readers.Stats{};
+    progress.phase = "file-stores";
+    try progress.write();
     try readers.collectFileSessions(a, io, home, &sessions, &stats, only);
+    progress.phase = "sql-stores";
+    try progress.write();
     readers.collectSqlSessions(a, io, home, &sessions, &stats, only) catch |err| {
         if (err == error.SqliteUnavailable) {
             writeErr(io, "sqlite3 is not installed — database-backed harnesses were skipped\n");
@@ -306,6 +310,8 @@ fn mainInner(init: std.process.Init) !u8 {
         }
     };
 
+    progress.phase = "kagi";
+    try progress.write();
     if (want_kagi or (import_archives and env.get("KAGI_SESSION") != null)) {
         kagi.collectKagi(a, io, env, &sessions, &stats) catch |err| {
             writeErr(io, "kagi fetch failed: ");
@@ -321,6 +327,8 @@ fn mainInner(init: std.process.Init) !u8 {
         };
     }
 
+    progress.phase = "archives";
+    try progress.write();
     if (import_archives) {
         const archives_root = try std.fs.path.join(a, &.{ output, "archives" });
         archives.collectFromArchives(a, io, archives_root, &sessions, &stats) catch |err| {
@@ -335,6 +343,8 @@ fn mainInner(init: std.process.Init) !u8 {
     progress.processed = sessions.items.len;
     try progress.write();
 
+    progress.phase = "filtering";
+    try progress.write();
     var noise_filtered: usize = 0;
     if (!include_noise) {
         var i: usize = sessions.items.len;

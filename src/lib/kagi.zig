@@ -21,30 +21,41 @@ fn parse(a: std.mem.Allocator, bytes: []const u8) ?std.json.Value {
 }
 
 const Fetch = struct {
-    client: std.http.Client,
+    io: std.Io,
     a: std.mem.Allocator,
     cookie: ?[]const u8,
 
+    /// curl with a hard timeout: a stalled Kagi request must never hang the
+    /// whole export. The cookie goes in an argv header on this local machine.
     fn get(self: *Fetch, path: []const u8) ![]u8 {
         const url = if (std.mem.startsWith(u8, path, "http://") or std.mem.startsWith(u8, path, "https://"))
             path
         else
             try std.fmt.allocPrint(self.a, "{s}{s}", .{ api, path });
-        var headers: [1]std.http.Header = undefined;
-        var headers_slice: []const std.http.Header = &.{};
+        var argv: std.ArrayList([]const u8) = .empty;
+        try argv.appendSlice(self.a, &.{ "curl", "--silent", "--show-error", "--fail", "--max-time", "20", "--compressed", "-A", "ai-export/1.0", "-H", "Accept: application/json" });
         if (self.cookie) |token| {
-            headers[0] = .{ .name = "Cookie", .value = try std.fmt.allocPrint(self.a, "kagi_session={s}", .{token}) };
-            headers_slice = headers[0..1];
+            try argv.append(self.a, "-H");
+            try argv.append(self.a, try std.fmt.allocPrint(self.a, "Cookie: kagi_session={s}", .{token}));
         }
-        var out = std.Io.Writer.Allocating.init(self.a);
-        const result = try self.client.fetch(.{
-            .location = .{ .url = url },
-            .method = .GET,
-            .response_writer = &out.writer,
-            .extra_headers = headers_slice,
-        });
-        if (result.status.class() != .success) return error.KagiHttpError;
-        return out.written();
+        try argv.append(self.a, url);
+        var child = std.process.spawn(self.io, .{ .argv = argv.items, .stdout = .pipe, .stderr = .ignore }) catch return error.KagiRequestFailed;
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(self.a);
+        var buf: [8192]u8 = undefined;
+        var reader = child.stdout.?.reader(self.io, &buf);
+        while (true) {
+            var chunk: [8192]u8 = undefined;
+            const n = reader.interface.readSliceShort(&chunk) catch break;
+            if (n == 0) break;
+            try out.appendSlice(self.a, chunk[0..n]);
+        }
+        const term = child.wait(self.io) catch return error.KagiRequestFailed;
+        switch (term) {
+            .exited => |code| if (code != 0) return error.KagiHttpError,
+            else => return error.KagiRequestFailed,
+        }
+        return out.toOwnedSlice(self.a);
     }
 };
 
@@ -160,8 +171,8 @@ pub fn collectKagi(a: std.mem.Allocator, io: std.Io, env: *const std.process.Env
     const token = env.get("KAGI_SESSION") orelse return;
     if (std.mem.trim(u8, token, " \t\r\n").len == 0) return;
 
-    var fetch = Fetch{ .client = .{ .allocator = a, .io = io }, .a = a, .cookie = token };
-    defer fetch.client.deinit();
+    var fetch = Fetch{ .io = io, .a = a, .cookie = token };
+    
 
     // The client repo documents per-conversation endpoints; enumerate through
     // the list endpoint, trying the known spellings.
@@ -204,8 +215,8 @@ pub fn collectKagi(a: std.mem.Allocator, io: std.Io, env: *const std.process.Env
 }
 
 pub fn collectShare(a: std.mem.Allocator, io: std.Io, share_uuid: []const u8, out: *std.ArrayList(Session), stats: *Stats) !void {
-    var fetch = Fetch{ .client = .{ .allocator = a, .io = io }, .a = a, .cookie = null };
-    defer fetch.client.deinit();
+    var fetch = Fetch{ .io = io, .a = a, .cookie = null };
+    
     const bytes = try fetch.get(try std.fmt.allocPrint(a, "/shares/{s}", .{share_uuid}));
     const value = parse(a, bytes) orelse return error.KagiShareUnreadable;
     if (value != .object) return;
