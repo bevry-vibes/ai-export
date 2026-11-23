@@ -44,8 +44,11 @@ pub const Writer = struct {
         }
     }
 
-    fn harnessDir(self: *Writer, harness: []const u8) ![]const u8 {
-        const root = try std.fs.path.join(self.allocator, &.{ self.output, harness });
+    fn harnessDir(self: *Writer, harness: []const u8, quarantined: bool) ![]const u8 {
+        const root = if (quarantined)
+            try std.fs.path.join(self.allocator, &.{ self.output, "duplicates", harness })
+        else
+            try std.fs.path.join(self.allocator, &.{ self.output, harness });
         try std.Io.Dir.cwd().createDirPath(self.io, root);
         return root;
     }
@@ -173,7 +176,7 @@ pub const Writer = struct {
 
     pub fn writeSession(self: *Writer, session: Session) !void {
         const a = self.allocator;
-        const root = try self.harnessDir(session.harness);
+        const root = try self.harnessDir(session.harness, session.quarantined);
         const json_dir = try std.fs.path.join(a, &.{ root, "json" });
         try std.Io.Dir.cwd().createDirPath(self.io, json_dir);
         const stem = try self.base(session);

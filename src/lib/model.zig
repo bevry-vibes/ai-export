@@ -32,6 +32,7 @@ pub const Session = struct {
     model: []const u8 = "",
     cwd: []const u8 = "",
     team: []const u8 = "",
+    quarantined: bool = false,
     source_path: []const u8,
     messages: []const Message = &.{},
     attachments: []const Attachment = &.{},
