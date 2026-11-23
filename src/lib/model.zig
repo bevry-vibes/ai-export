@@ -33,6 +33,7 @@ pub const Session = struct {
     cwd: []const u8 = "",
     team: []const u8 = "",
     quarantined: bool = false,
+    link_to: []const u8 = "",
     source_path: []const u8,
     messages: []const Message = &.{},
     attachments: []const Attachment = &.{},

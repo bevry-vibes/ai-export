@@ -11,6 +11,12 @@ const model = @import("model.zig");
 
 const Session = model.Session;
 
+pub fn sessionStem(a: std.mem.Allocator, session: Session) ![]const u8 {
+    const title = try model.humanTitle(a, session.title);
+    const short = try model.shortId(a, session.id);
+    return std.fmt.allocPrint(a, "{s} - {s} - {s}", .{ session.stamp, short, title });
+}
+
 pub const Writer = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -54,16 +60,18 @@ pub const Writer = struct {
     }
 
     fn base(self: *Writer, session: Session) ![]const u8 {
-        const a = self.allocator;
-        const title = try model.humanTitle(a, session.title);
-        const short = try model.shortId(a, session.id);
-        return std.fmt.allocPrint(a, "{s} - {s} - {s}", .{ session.stamp, short, title });
+        return sessionStem(self.allocator, session);
     }
 
     fn markdown(self: *Writer, session: Session) ![]u8 {
         var out: std.ArrayList(u8) = .empty;
         errdefer out.deinit(self.allocator);
         const a = self.allocator;
+        if (session.link_to.len > 0) {
+            try out.appendSlice(a, "> Original: ");
+            try out.appendSlice(a, session.link_to);
+            try out.appendSlice(a, "\n\n");
+        }
         for (session.messages) |message| {
             if (!std.mem.eql(u8, message.role, "user") and !std.mem.eql(u8, message.role, "assistant")) continue;
             var label: []const u8 = "### Prompt";

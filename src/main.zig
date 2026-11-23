@@ -311,21 +311,6 @@ fn mainInner(init: std.process.Init) !u8 {
     progress.conflicts = report.conflicts.len;
     try progress.write();
 
-    // High-confidence cross-harness copies are known imports, not originals:
-    // write them under duplicates/<harness>/ instead of the harness directory.
-    var quarantined: usize = 0;
-    for (report.duplicates) |dup| {
-        if (!std.mem.eql(u8, dup.confidence, "high")) continue;
-        const copy_id = if (std.mem.eql(u8, dup.copy_harness, dup.a_harness)) dup.a_id else dup.b_id;
-        for (sessions.items) |*session| {
-            if (session.quarantined) continue;
-            if (!std.mem.eql(u8, session.harness, dup.copy_harness)) continue;
-            if (!std.mem.eql(u8, session.id, copy_id)) continue;
-            session.quarantined = true;
-            quarantined += 1;
-        }
-    }
-
     const archives_root = try std.fs.path.join(a, &.{ output, "archives" });
     if (!dry_run) try std.Io.Dir.cwd().createDirPath(io, archives_root);
     var title_cache = std.StringHashMap([]const u8).init(a);
@@ -363,6 +348,33 @@ fn mainInner(init: std.process.Init) !u8 {
         try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = cache_path, .data = cache_out.items });
     }
 
+    // Known cross-harness copies: only byte-identical (normalised) duplicates
+    // are quarantined. Variants and extended copies stay in their harness
+    // directory with a link back to the original transcript.
+    var quarantined: usize = 0;
+    var linked: usize = 0;
+    for (report.duplicates) |dup| {
+        if (!std.mem.eql(u8, dup.confidence, "high")) continue;
+        const copy_id = if (std.mem.eql(u8, dup.copy_harness, dup.a_harness)) dup.a_id else dup.b_id;
+        const original_id = if (std.mem.eql(u8, dup.copy_harness, dup.a_harness)) dup.b_id else dup.a_id;
+        var copy: ?*model.Session = null;
+        var original: ?*model.Session = null;
+        for (sessions.items) |*session| {
+            if (copy == null and std.mem.eql(u8, session.harness, dup.copy_harness) and std.mem.eql(u8, session.id, copy_id)) copy = session;
+            if (original == null and std.mem.eql(u8, session.harness, dup.original_harness) and std.mem.eql(u8, session.id, original_id)) original = session;
+        }
+        const c = copy orelse continue;
+        const o = original orelse continue;
+        if (std.mem.eql(u8, dup.kind, "exact")) {
+            c.quarantined = true;
+            quarantined += 1;
+        } else {
+            const stem = try render.sessionStem(a, o.*);
+            c.link_to = try std.fmt.allocPrint(a, "[{s}](../{s}/{s}.md)", .{ o.title, o.harness, stem });
+            linked += 1;
+        }
+    }
+
     var writer = if (dry_run) null else try render.Writer.init(a, io, output, purge);
     progress.phase = "writing";
     progress.total = sessions.items.len;
@@ -382,8 +394,8 @@ fn mainInner(init: std.process.Init) !u8 {
     try progress.write();
 
     const summary = try std.fmt.allocPrint(a,
-        "scanned: {d} sessions · noise filtered: {d} · titled: {d} · quarantined: {d} · exported: {d} · skipped: {d} · failed: {d} · attachments: {d} · collapsed: {d} · merged: {d} · cross-harness duplicates: {d} · conflicts: {d}\noutput: {s}\n",
-        .{ stats.scanned, noise_filtered, titled, quarantined, if (writer) |w| w.written else 0, stats.skipped, stats.failed, if (writer) |w| w.attachment_count else 0, report.collapsed, report.merged, report.duplicates.len, report.conflicts.len, output },
+        "scanned: {d} sessions · noise filtered: {d} · titled: {d} · quarantined: {d} · linked: {d} · exported: {d} · skipped: {d} · failed: {d} · attachments: {d} · collapsed: {d} · merged: {d} · cross-harness duplicates: {d} · conflicts: {d}\noutput: {s}\n",
+        .{ stats.scanned, noise_filtered, titled, quarantined, linked, if (writer) |w| w.written else 0, stats.skipped, stats.failed, if (writer) |w| w.attachment_count else 0, report.collapsed, report.merged, report.duplicates.len, report.conflicts.len, output },
     );
     writeOut(io, summary);
     return 0;
