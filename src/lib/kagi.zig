@@ -204,45 +204,55 @@ pub fn collectKagi(a: std.mem.Allocator, io: std.Io, env: *const std.process.Env
     var fetch = Fetch{ .io = io, .a = a, .cookie = token, .cache_root = cache_root };
     
 
-    // The client repo documents per-conversation endpoints; enumerate through
-    // the list endpoint, trying the known spellings.
-    var conversations: []const std.json.Value = &.{};
-    // The web app's own init payload carries the first page of conversations.
-    const list_paths = [_][]const u8{ "/init", "/conversations?limit=100", "/conversations", "/conversations/list" };
-    for (list_paths) |path| {
-        const bytes = fetch.get(path) catch continue;
-        const value = parse(a, bytes) orelse continue;
+    // Enumerate the full conversation list with the web app's after_id cursor.
+    // /init only carries the first 50 rows; /api/conversations pages by 100.
+    var after_id: []const u8 = "";
+    var seen = std.StringHashMap(void).init(a);
+    var page: usize = 0;
+    var total: usize = 0;
+    while (page < 50) : (page += 1) {
+        const path = if (after_id.len > 0)
+            try std.fmt.allocPrint(a, "/conversations?limit=100&after_id={s}", .{after_id})
+        else
+            "/conversations?limit=100";
+        const bytes = fetch.get(path) catch break;
+        const value = parse(a, bytes) orelse break;
         var rows = itemsOf(value, "conversations");
-        if (rows.len == 0) rows = nestedItems(value, "conversations", "items");
-        if (rows.len > 0) {
-            conversations = rows;
-            break;
-        }
-    }
-    if (conversations.len == 0) {
-        return error.KagiNoConversationList;
-    }
-    if (env.get("KAGI_DEBUG") != null) {
-        std.Io.File.stderr().writeStreamingAll(io, std.fmt.allocPrint(a, "kagi: {d} conversations\n", .{conversations.len}) catch "") catch {};
-    }
+        if (rows.len == 0 and value == .object) rows = itemsOf(value, "items");
+        if (rows.len == 0) break;
+        for (rows) |conv| {
+            if (conv != .object) continue;
+            const id = model.idOf(conv.object);
+            if (id.len == 0) continue;
+            if (seen.contains(id)) continue;
+            try seen.put(try a.dupe(u8, id), {});
+            total += 1;
+            if (tracker) |t| try t.note("kagi:conversations", total, 0);
 
-    for (conversations, 0..) |conv, ci| {
-        if (tracker) |t| try t.note("kagi:conversations", ci, conversations.len);
-        if (conv != .object) continue;
-        const conv_id = model.idOf(conv.object);
-        if (conv_id.len == 0) continue;
-        const title = model.titleOf(conv.object);
-        const branch_bytes = fetch.get(try std.fmt.allocPrint(a, "/conversations/{s}/branches", .{conv_id})) catch {
-            stats.failed += 1;
-            continue;
-        };
-        const branch_value = parse(a, branch_bytes) orelse {
-            stats.failed += 1;
-            continue;
-        };
-        const branches = itemsOf(branch_value, "branches");
-        for (branches) |branch| addBranch(a, io, &fetch, branch, title, out, stats) catch { stats.failed += 1; };
+            const title = model.titleOf(conv.object);
+            const branch_bytes = fetch.get(try std.fmt.allocPrint(a, "/conversations/{s}/branches", .{id})) catch {
+                stats.failed += 1;
+                continue;
+            };
+            const branch_value = parse(a, branch_bytes) orelse {
+                stats.failed += 1;
+                continue;
+            };
+            const branches = itemsOf(branch_value, "branches");
+            for (branches) |branch| addBranch(a, io, &fetch, branch, title, out, stats) catch { stats.failed += 1; };
+        }
+        var has_more = false;
+        if (value == .object) {
+            const cursor_field = value.object.get("conversations") orelse value;
+            if (cursor_field == .object) {
+                if (cursor_field.object.get("has_more")) |hm| has_more = hm == .bool and hm.bool;
+            }
+        }
+        if (!has_more) break;
+        after_id = try a.dupe(u8, model.idOf(rows[rows.len - 1].object));
+        if (after_id.len == 0) break;
     }
+    if (total == 0) return error.KagiNoConversationList;
 }
 
 pub fn collectShare(a: std.mem.Allocator, io: std.Io, share_uuid: []const u8, out: *std.ArrayList(Session), stats: *Stats, cache_root: []const u8) !void {

@@ -92,15 +92,17 @@ fn capture(a: std.mem.Allocator, io: std.Io, argv: []const []const u8) ![]u8 {
 
 fn isGenericTitle(a: std.mem.Allocator, title: []const u8) bool {
     const lowered = std.ascii.allocLowerString(a, std.mem.trim(u8, title, " \t-")) catch return false;
-    const generic = [_][]const u8{ "thread", "new chat", "new session", "untitled", "chat", "conversation", "session" };
+    const generic = [_][]const u8{ "thread", "new chat", "new session", "untitled", "chat", "conversation", "session", "start implementation" };
     for (generic) |word| if (std.mem.eql(u8, lowered, word)) return true;
     return std.mem.startsWith(u8, lowered, "new session -");
 }
 
 fn poorTitle(title: []const u8) bool {
-    if (title.len > 55) return true;
+    if (title.len > 55 or title.len < 8) return true;
     if (std.mem.indexOf(u8, title, "...") != null or std.mem.indexOf(u8, title, "…") != null) return true;
-    return false;
+    var has_alnum = false;
+    for (title) |c| if (std.ascii.isAlphanumeric(c)) { has_alnum = true; break; };
+    return !has_alnum;
 }
 
 fn generateTitle(a: std.mem.Allocator, io: std.Io, cache: *std.StringHashMap([]const u8), budget: *usize, session: model.Session) !?[]const u8 {
@@ -143,12 +145,20 @@ fn isAgentDetectNoise(a: std.mem.Allocator, session: model.Session) bool {
         "in the current working directory and report the result",
         "agent-detect-dev fixtures capture",
         "agent-detect fixtures capture",
+        "reply with exactly pong",
+        "reply with the single word pong",
+        "reply with exactly rxok",
     };
+    const exact = [_][]const u8{"reply ok"};
     for (session.messages) |message| {
         if (!std.mem.eql(u8, message.role, "user")) continue;
         const lowered = std.ascii.allocLowerString(a, message.content) catch continue;
         for (patterns) |pattern| {
             if (std.mem.indexOf(u8, lowered, pattern) != null) return true;
+        }
+        const trimmed = std.mem.trim(u8, lowered, " \t\r\n");
+        for (exact) |word| {
+            if (std.mem.eql(u8, trimmed, word)) return true;
         }
     }
     return false;
