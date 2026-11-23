@@ -67,7 +67,7 @@ fn sameMessage(a: model.Message, b: model.Message) bool {
 /// Contiguous containment: an export that gained messages keeps the original
 /// transcript as a block. This avoids treating every short preamble as a match.
 fn contains(sup: []const model.Message, sub: []const model.Message) bool {
-    if (sub.len < 3 or sup.len < sub.len) return false;
+    if (sub.len == 0 or sup.len < sub.len) return false;
     var i: usize = 0;
     while (i + sub.len <= sup.len) : (i += 1) {
         var ok = true;
@@ -109,7 +109,55 @@ fn better(a: Session, b: Session) bool {
     return a.title.len >= b.title.len;
 }
 
+fn mergeGroup(a: std.mem.Allocator, sessions: *std.ArrayList(Session), indices: []const usize, conflicts: *std.ArrayList(Conflict), remove: *std.ArrayList(usize), collapsed: *usize, merged: *usize) !void {
+    if (indices.len < 2) return;
+    var best = indices[0];
+    for (indices[1..]) |idx| {
+        if (better(sessions.items[idx], sessions.items[best])) best = idx;
+    }
+    for (indices) |idx| {
+        if (idx == best) continue;
+        const a_s = sessions.items[best];
+        const b_s = sessions.items[idx];
+        if (seqHash(a_s) == seqHash(b_s)) {
+            collapsed.* += 1;
+            try remove.append(a, idx);
+        } else if (contains(a_s.messages, b_s.messages)) {
+            merged.* += 1;
+            try remove.append(a, idx);
+        } else if (contains(b_s.messages, a_s.messages)) {
+            merged.* += 1;
+            const old_best = best;
+            best = idx;
+            try remove.append(a, old_best);
+        } else {
+            try conflicts.append(a, .{
+                .harness = a_s.harness,
+                .id = a_s.id,
+                .title = a_s.title,
+                .other_title = b_s.title,
+                .message_counts = try std.fmt.allocPrint(a, "{d} vs {d}", .{ a_s.messages.len, b_s.messages.len }),
+            });
+        }
+    }
+}
+
+fn removeIndices(a: std.mem.Allocator, sessions: *std.ArrayList(Session), remove: *std.ArrayList(usize)) void {
+    _ = a;
+    std.mem.sort(usize, remove.items, {}, comptime std.sort.desc(usize));
+    for (remove.items) |idx| {
+        if (idx < sessions.items.len) _ = sessions.orderedRemove(idx);
+    }
+    remove.clearRetainingCapacity();
+}
+
 pub fn process(a: std.mem.Allocator, sessions: *std.ArrayList(Session)) !Result {
+    var conflicts: std.ArrayList(Conflict) = .empty;
+    var remove: std.ArrayList(usize) = .empty;
+    var collapsed: usize = 0;
+    var merged: usize = 0;
+
+    // Pass 1: same harness and same session id.
     var groups = std.StringHashMap(std.ArrayList(usize)).init(a);
     for (sessions.items, 0..) |s, i| {
         const usable_id = s.id.len > 0 and std.mem.indexOfScalar(u8, s.id, ' ') == null;
@@ -121,51 +169,24 @@ pub fn process(a: std.mem.Allocator, sessions: *std.ArrayList(Session)) !Result 
         if (!gop.found_existing) gop.value_ptr.* = .empty;
         try gop.value_ptr.append(a, i);
     }
-
-    var conflicts: std.ArrayList(Conflict) = .empty;
-    var remove: std.ArrayList(usize) = .empty;
-    var collapsed: usize = 0;
-    var merged: usize = 0;
-
     var it = groups.iterator();
-    while (it.next()) |entry| {
-        const indices = entry.value_ptr.items;
-        if (indices.len < 2) continue;
-        var best = indices[0];
-        for (indices[1..]) |idx| {
-            if (better(sessions.items[idx], sessions.items[best])) best = idx;
-        }
-        for (indices) |idx| {
-            if (idx == best) continue;
-            const a_s = sessions.items[best];
-            const b_s = sessions.items[idx];
-            if (seqHash(a_s) == seqHash(b_s)) {
-                collapsed += 1;
-                try remove.append(a, idx);
-            } else if (contains(a_s.messages, b_s.messages)) {
-                merged += 1;
-                try remove.append(a, idx);
-            } else if (contains(b_s.messages, a_s.messages)) {
-                merged += 1;
-                const old_best = best;
-                best = idx;
-                try remove.append(a, old_best);
-            } else {
-                try conflicts.append(a, .{
-                    .harness = a_s.harness,
-                    .id = a_s.id,
-                    .title = a_s.title,
-                    .other_title = b_s.title,
-                    .message_counts = try std.fmt.allocPrint(a, "{d} vs {d}", .{ a_s.messages.len, b_s.messages.len }),
-                });
-            }
-        }
-    }
+    while (it.next()) |entry| try mergeGroup(a, sessions, entry.value_ptr.items, &conflicts, &remove, &collapsed, &merged);
+    removeIndices(a, sessions, &remove);
 
-    std.mem.sort(usize, remove.items, {}, comptime std.sort.desc(usize));
-    for (remove.items) |idx| {
-        if (idx < sessions.items.len) _ = sessions.orderedRemove(idx);
+    // Pass 2: repeated tasks often get a fresh session id but keep the same
+    // title and opening prompt (e.g. "Reply with the single word: PONG").
+    // Collapse those within the harness as well; divergent copies are kept
+    // and reported as conflicts.
+    var by_task = std.StringHashMap(std.ArrayList(usize)).init(a);
+    for (sessions.items, 0..) |s, i| {
+        const key = try std.fmt.allocPrint(a, "{s}\x1f{s}\x1f{d}", .{ s.harness, s.title, firstHash(s) });
+        const gop = try by_task.getOrPut(key);
+        if (!gop.found_existing) gop.value_ptr.* = .empty;
+        try gop.value_ptr.append(a, i);
     }
+    var tit = by_task.iterator();
+    while (tit.next()) |entry| try mergeGroup(a, sessions, entry.value_ptr.items, &conflicts, &remove, &collapsed, &merged);
+    removeIndices(a, sessions, &remove);
 
     // Cross-harness duplicates are reported, never merged.
     var buckets = std.AutoHashMap(u64, std.ArrayList(usize)).init(a);
