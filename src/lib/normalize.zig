@@ -52,10 +52,32 @@ pub fn contentText(a: std.mem.Allocator, value: std.json.Value, depth: u8) ![]u8
     return out.toOwnedSlice(a);
 }
 
-fn addMessage(a: std.mem.Allocator, out: *std.ArrayList(Message), role: []const u8, body: std.json.Value, time: []const u8) !void {
+fn modelOf(obj: std.json.ObjectMap) []const u8 {
+    const keys = [_][]const u8{ "model", "model_name", "modelName", "modelId", "model_id", "modelID" };
+    for (keys) |key| if (model.jstr(obj, key)) |v| return v;
+    return "";
+}
+
+fn providerOf(obj: std.json.ObjectMap) []const u8 {
+    const keys = [_][]const u8{ "provider", "provider_name", "providerName", "providerID", "provider_id", "model_provider", "modelProvider" };
+    for (keys) |key| if (model.jstr(obj, key)) |v| return v;
+    return "";
+}
+
+fn addMessage(a: std.mem.Allocator, out: *std.ArrayList(Message), role: []const u8, body: std.json.Value, time: []const u8, meta: std.json.ObjectMap) !void {
     const text = try contentText(a, body, 0);
     if (text.len == 0) return;
-    try out.append(a, .{ .role = role, .content = text, .time = time });
+    var model_name = modelOf(meta);
+    var provider = providerOf(meta);
+    if (model_name.len == 0 or provider.len == 0) {
+        if (meta.get("model")) |v| {
+            if (v == .object) {
+                if (model_name.len == 0) model_name = modelOf(v.object);
+                if (provider.len == 0) provider = providerOf(v.object);
+            }
+        }
+    }
+    try out.append(a, .{ .role = role, .content = text, .time = time, .provider = provider, .model = model_name });
 }
 
 /// Walk a parsed transcript and collect user/assistant messages in file order.
@@ -90,7 +112,7 @@ pub fn collectMessages(a: std.mem.Allocator, value: std.json.Value, out: *std.Ar
                 }
                 if (body) |b| {
                     const time = model.firstTime(obj);
-                    try addMessage(a, out, r, b, time);
+                    try addMessage(a, out, r, b, time, obj);
                     return;
                 }
             }

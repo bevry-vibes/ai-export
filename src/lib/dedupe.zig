@@ -47,6 +47,8 @@ fn seqHash(session: Session) u64 {
     for (session.messages) |m| {
         h.update(m.role);
         h.update(m.content);
+        h.update(m.provider);
+        h.update(m.model);
     }
     return h.final();
 }
@@ -61,7 +63,41 @@ fn firstHash(session: Session) u64 {
 }
 
 fn sameMessage(a: model.Message, b: model.Message) bool {
-    return std.mem.eql(u8, a.role, b.role) and std.mem.eql(u8, a.content, b.content);
+    return std.mem.eql(u8, a.role, b.role) and std.mem.eql(u8, a.content, b.content) and
+        std.mem.eql(u8, a.provider, b.provider) and std.mem.eql(u8, a.model, b.model);
+}
+
+/// Same prompts answered by different models: an intentional comparison,
+/// not a divergent copy of one session.
+fn modelComparison(a: Session, b: Session) bool {
+    // Same prompts, different answers: most often the same task run through
+    // several models. Turn counts can differ, so compare only the user turns.
+    var au: usize = 0;
+    var bu: usize = 0;
+    var has_answer = false;
+    for (a.messages) |m| {
+        if (std.mem.eql(u8, m.role, "user")) au += 1 else if (std.mem.eql(u8, m.role, "assistant")) has_answer = true;
+    }
+    for (b.messages) |m| {
+        if (std.mem.eql(u8, m.role, "user")) bu += 1 else if (std.mem.eql(u8, m.role, "assistant")) has_answer = true;
+    }
+    if (au == 0 or au != bu or !has_answer) return false;
+    var ai: usize = 0;
+    var bi: usize = 0;
+    while (ai < a.messages.len and bi < b.messages.len) {
+        if (!std.mem.eql(u8, a.messages[ai].role, "user")) {
+            ai += 1;
+            continue;
+        }
+        if (!std.mem.eql(u8, b.messages[bi].role, "user")) {
+            bi += 1;
+            continue;
+        }
+        if (!std.mem.eql(u8, a.messages[ai].content, b.messages[bi].content)) return false;
+        ai += 1;
+        bi += 1;
+    }
+    return true;
 }
 
 /// Contiguous containment: an export that gained messages keeps the original
@@ -130,7 +166,7 @@ fn mergeGroup(a: std.mem.Allocator, sessions: *std.ArrayList(Session), indices: 
             const old_best = best;
             best = idx;
             try remove.append(a, old_best);
-        } else {
+        } else if (!modelComparison(a_s, b_s)) {
             try conflicts.append(a, .{
                 .harness = a_s.harness,
                 .id = a_s.id,

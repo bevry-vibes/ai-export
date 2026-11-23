@@ -12,6 +12,8 @@ pub const Message = struct {
     role: []const u8 = "unknown",
     content: []const u8 = "",
     time: []const u8 = "",
+    provider: []const u8 = "",
+    model: []const u8 = "",
 };
 
 pub const Attachment = struct {

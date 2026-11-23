@@ -63,7 +63,17 @@ pub const Writer = struct {
         const a = self.allocator;
         for (session.messages) |message| {
             if (!std.mem.eql(u8, message.role, "user") and !std.mem.eql(u8, message.role, "assistant")) continue;
-            const label = if (std.mem.eql(u8, message.role, "user")) "### Prompt" else "### Answer";
+            var label: []const u8 = "### Prompt";
+            if (std.mem.eql(u8, message.role, "assistant")) {
+                const id = if (message.model.len > 0) message.model else session.model;
+                const prov = if (message.provider.len > 0) message.provider else session.provider;
+                label = if (id.len == 0)
+                    "### Answer"
+                else if (prov.len > 0)
+                    try std.fmt.allocPrint(a, "### Answer — {s}/{s}", .{ prov, id })
+                else
+                    try std.fmt.allocPrint(a, "### Answer — {s}", .{id});
+            }
             if (out.items.len > 0) try out.append(a, '\n');
             try out.appendSlice(a, label);
             try out.appendSlice(a, "\n\n");
@@ -114,6 +124,8 @@ pub const Writer = struct {
             var item = std.json.ObjectMap.empty;
             try put(a, &item, "role", message.role);
             try put(a, &item, "time", message.time);
+            try put(a, &item, "provider", message.provider);
+            try put(a, &item, "model", message.model);
             try put(a, &item, "content", message.content);
             try msg_array.append(.{ .object = item });
         }
