@@ -9,6 +9,7 @@
 const std = @import("std");
 const model = @import("model.zig");
 const normalize = @import("normalize.zig");
+const progress = @import("progress.zig");
 
 const Session = model.Session;
 const Message = model.Message;
@@ -371,9 +372,10 @@ fn walkDir(a: std.mem.Allocator, io: std.Io, path: []const u8, spec: FileSpec, h
     }
 }
 
-pub fn collectFileSessions(a: std.mem.Allocator, io: std.Io, home: []const u8, out: *std.ArrayList(Session), stats: *Stats, only: []const u8) !void {
-    for (file_specs) |spec| {
+pub fn collectFileSessions(a: std.mem.Allocator, io: std.Io, home: []const u8, out: *std.ArrayList(Session), stats: *Stats, only: []const u8, tracker: ?*progress.Tracker) !void {
+    for (file_specs, 0..) |spec, si| {
         if (only.len > 0 and !std.mem.eql(u8, only, spec.harness)) continue;
+        if (tracker) |t| try t.note(try std.fmt.allocPrint(a, "files:{s}", .{spec.harness}), si, file_specs.len);
         const root = try std.fs.path.join(a, &.{ home, spec.root });
         walkDir(a, io, root, spec, home, out, stats);
     }
@@ -402,9 +404,10 @@ fn walkDbs(a: std.mem.Allocator, io: std.Io, path: []const u8, suffix: []const u
     }
 }
 
-pub fn collectSqlSessions(a: std.mem.Allocator, io: std.Io, home: []const u8, out: *std.ArrayList(Session), stats: *Stats, only: []const u8) !void {
-    for (sql_specs) |spec| {
+pub fn collectSqlSessions(a: std.mem.Allocator, io: std.Io, home: []const u8, out: *std.ArrayList(Session), stats: *Stats, only: []const u8, tracker: ?*progress.Tracker) !void {
+    for (sql_specs, 0..) |spec, si| {
         if (only.len > 0 and !std.mem.eql(u8, only, spec.harness)) continue;
+        if (tracker) |t| try t.note(try std.fmt.allocPrint(a, "sql:{s}", .{spec.harness}), si, sql_specs.len);
         var dbs: std.ArrayList([]const u8) = .empty;
         if (spec.discover_root.len > 0) {
             const root = try std.fs.path.join(a, &.{ home, spec.discover_root });
@@ -420,7 +423,8 @@ pub fn collectSqlSessions(a: std.mem.Allocator, io: std.Io, home: []const u8, ou
                 continue;
             };
             const rows = rowsOf(a, bytes);
-            for (rows) |row| {
+            for (rows, 0..) |row, ri| {
+                if (tracker) |t| try t.tick(ri, rows.len);
                 if (row != .object) continue;
                 const obj = row.object;
                 const id = sqlId(a, obj) orelse continue;

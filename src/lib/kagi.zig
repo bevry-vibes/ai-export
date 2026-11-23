@@ -10,6 +10,7 @@ const std = @import("std");
 const model = @import("model.zig");
 const normalize = @import("normalize.zig");
 const readers = @import("readers.zig");
+const progress = @import("progress.zig");
 
 const Session = model.Session;
 const Stats = readers.Stats;
@@ -24,6 +25,7 @@ const Fetch = struct {
     io: std.Io,
     a: std.mem.Allocator,
     cookie: ?[]const u8,
+    cache_root: []const u8,
 
     /// curl with a hard timeout: a stalled Kagi request must never hang the
     /// whole export. The cookie goes in an argv header on this local machine.
@@ -56,6 +58,31 @@ const Fetch = struct {
             else => return error.KagiRequestFailed,
         }
         return out.toOwnedSlice(self.a);
+    }
+
+    /// Cached remote read. Callers choose the key so branch changes (new
+    /// prompts, revived threads) naturally miss the cache and refetch.
+    fn getCached(self: *Fetch, url: []const u8, key: []const u8, fallback_prefix: []const u8) ![]u8 {
+        const dir = try std.fs.path.join(self.a, &.{ self.cache_root, "kagi" });
+        const path = try std.fs.path.join(self.a, &.{ dir, key });
+        if (std.Io.Dir.cwd().readFileAlloc(self.io, path, self.a, @enumFromInt(@as(u64, 128 << 20)))) |bytes| return bytes else |_| {}
+        const bytes = self.get(url) catch {
+            // Request failed: reuse the newest raw response cached for this
+            // endpoint/branch even if its revision key has changed.
+            var fallback_dir = std.Io.Dir.cwd().openDir(self.io, dir, .{ .iterate = true }) catch return error.KagiRequestFailed;
+            defer fallback_dir.close(self.io);
+            var it = fallback_dir.iterate();
+            while (it.next(self.io) catch null) |entry| {
+                if (entry.kind != .file) continue;
+                if (!std.mem.startsWith(u8, entry.name, fallback_prefix)) continue;
+                const stale_path = try std.fs.path.join(self.a, &.{ dir, entry.name });
+                if (std.Io.Dir.cwd().readFileAlloc(self.io, stale_path, self.a, @enumFromInt(@as(u64, 128 << 20)))) |old| return old else |_| {}
+            }
+            return error.KagiRequestFailed;
+        };
+        try std.Io.Dir.cwd().createDirPath(self.io, dir);
+        try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = bytes });
+        return bytes;
     }
 };
 
@@ -97,7 +124,8 @@ fn fetchAttachments(a: std.mem.Allocator, fetch: ?*Fetch, item: std.json.Value, 
             try std.fmt.allocPrint(a, "https://assistant.kagi.com{s}", .{rel})
         else
             rel;
-        const bytes = f.get(url) catch continue;
+        const key = try std.fmt.allocPrint(a, "attachment-{x}-{s}.bin", .{ @as(u64, @truncate(std.hash.Wyhash.hash(0, url))), ext });
+        const bytes = f.getCached(url, key, try std.fmt.allocPrint(a, "attachment-{x}-", .{ @as(u64, @truncate(std.hash.Wyhash.hash(0, url))) })) catch continue;
         try out.append(a, .{
             .title = try a.dupe(u8, model.jstr(att.object, "original_filename") orelse filename),
             .source_path = url,
@@ -130,7 +158,9 @@ fn addBranch(a: std.mem.Allocator, io: std.Io, fetch: *Fetch, branch: std.json.V
             try std.fmt.allocPrint(a, "/branches/{s}/messages?limit=100&before={s}", .{ branch_id, before })
         else
             try std.fmt.allocPrint(a, "/branches/{s}/messages?limit=100", .{branch_id});
-        const bytes = fetch.get(path) catch break;
+        const revision = model.firstTime(branch.object);
+        const cache_key = try std.fmt.allocPrint(a, "messages-{s}-{s}-{d}.json", .{ branch_id, if (revision.len > 0) revision else "none", @as(u64, @intCast(branch.object.count())) });
+        const bytes = fetch.getCached(try std.fmt.allocPrint(a, "https://assistant.kagi.com{s}", .{path}), cache_key, try std.fmt.allocPrint(a, "messages-{s}-", .{branch_id})) catch break;
         const value = parse(a, bytes) orelse break;
         const page_items = nestedItems(value, "messages", "items");
         if (page_items.len == 0) break;
@@ -167,11 +197,11 @@ fn addBranch(a: std.mem.Allocator, io: std.Io, fetch: *Fetch, branch: std.json.V
     });
 }
 
-pub fn collectKagi(a: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map, out: *std.ArrayList(Session), stats: *Stats) !void {
+pub fn collectKagi(a: std.mem.Allocator, io: std.Io, env: *const std.process.Environ.Map, out: *std.ArrayList(Session), stats: *Stats, tracker: ?*progress.Tracker, cache_root: []const u8) !void {
     const token = env.get("KAGI_SESSION") orelse return;
     if (std.mem.trim(u8, token, " \t\r\n").len == 0) return;
 
-    var fetch = Fetch{ .io = io, .a = a, .cookie = token };
+    var fetch = Fetch{ .io = io, .a = a, .cookie = token, .cache_root = cache_root };
     
 
     // The client repo documents per-conversation endpoints; enumerate through
@@ -196,7 +226,8 @@ pub fn collectKagi(a: std.mem.Allocator, io: std.Io, env: *const std.process.Env
         std.Io.File.stderr().writeStreamingAll(io, std.fmt.allocPrint(a, "kagi: {d} conversations\n", .{conversations.len}) catch "") catch {};
     }
 
-    for (conversations) |conv| {
+    for (conversations, 0..) |conv, ci| {
+        if (tracker) |t| try t.note("kagi:conversations", ci, conversations.len);
         if (conv != .object) continue;
         const conv_id = model.idOf(conv.object);
         if (conv_id.len == 0) continue;
@@ -214,8 +245,8 @@ pub fn collectKagi(a: std.mem.Allocator, io: std.Io, env: *const std.process.Env
     }
 }
 
-pub fn collectShare(a: std.mem.Allocator, io: std.Io, share_uuid: []const u8, out: *std.ArrayList(Session), stats: *Stats) !void {
-    var fetch = Fetch{ .io = io, .a = a, .cookie = null };
+pub fn collectShare(a: std.mem.Allocator, io: std.Io, share_uuid: []const u8, out: *std.ArrayList(Session), stats: *Stats, cache_root: []const u8) !void {
+    var fetch = Fetch{ .io = io, .a = a, .cookie = null, .cache_root = cache_root };
     
     const bytes = try fetch.get(try std.fmt.allocPrint(a, "/shares/{s}", .{share_uuid}));
     const value = parse(a, bytes) orelse return error.KagiShareUnreadable;

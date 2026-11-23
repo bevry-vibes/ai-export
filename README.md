@@ -29,7 +29,7 @@ Options: `--output=<dir>` changes the destination; `--harness=<id>` limits the r
 
 Agent-detect noise is filtered out by default. The capture phrase `in the current working directory and report the result` appears in both the static `capture_prompt` (`src/dev/dev.zig`) and the daemon's dynamic absolute-path variant — 164 absolute-path examples were found in the existing exports — and all 547 `<prompt>` invocations in `fixtures/index.json` resolve to one of those two. Only that capture instruction is filtered. Repeated short tasks such as `Reply with the single word: PONG` and `Translate humanist to/from Indonesian` are **not** filtered — they are ordinary conversations and go through consolidation instead.
 
-Every run is a full regeneration. Previous harness directories under the chosen output directory are wiped first, so a format change never leaves two generations of files side by side.
+Remote harnesses (Kagi) cache raw API responses under `<output>/cache/kagi/`. Branch message pages are keyed by branch id, revision time and message count, so revived or extended threads refetch automatically; attachments are keyed by URL. If a request fails, the newest cached raw response for that endpoint is reused instead of dropping the data. The cache is preserved by `--purge`.
 
 ## Output
 
