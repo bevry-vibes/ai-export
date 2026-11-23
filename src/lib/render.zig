@@ -18,10 +18,10 @@ pub const Writer = struct {
     written: usize = 0,
     attachment_count: usize = 0,
 
-    pub fn init(a: std.mem.Allocator, io: std.Io, output: []const u8) !Writer {
+    pub fn init(a: std.mem.Allocator, io: std.Io, output: []const u8, purge: bool) !Writer {
         try std.Io.Dir.cwd().createDirPath(io, output);
         var self = Writer{ .allocator = a, .io = io, .output = output };
-        try self.clean();
+        if (purge) try self.clean();
         return self;
     }
 

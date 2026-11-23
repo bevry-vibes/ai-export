@@ -29,6 +29,7 @@ pub const usage =
     \\  --kagi             fetch Kagi Assistant chats (needs KAGI_SESSION)
     \\  --kagi-share=<id>  fetch one public Kagi share
     \\  --import-archives   also import every archive under <output>/archives
+    \\  --purge             delete harness directories and reports before writing
     \\  --no-title-generation  skip fm respond title summaries
     \\  --include-noise    keep agent-detect fixtures-capture sessions
     \\  --dry-run          discover and report, write nothing
@@ -49,6 +50,72 @@ fn writeOut(io: std.Io, text: []const u8) void {
 fn writeErr(io: std.Io, text: []const u8) void {
     std.Io.File.stderr().writeStreamingAll(io, text) catch {};
 }
+
+const Progress = struct {
+    a: std.mem.Allocator,
+    io: std.Io,
+    output: []const u8,
+    phase: []const u8 = "starting",
+    started_ns: i128,
+    last_ns: i128,
+    cadence_ns: i128 = @as(i128, 10) * std.time.ns_per_s,
+    total: usize = 0,
+    processed: usize = 0,
+    exported: usize = 0,
+    skipped: usize = 0,
+    failed: usize = 0,
+    attachments: usize = 0,
+    titled: usize = 0,
+    noise_filtered: usize = 0,
+    collapsed: usize = 0,
+    merged: usize = 0,
+    duplicates: usize = 0,
+    conflicts: usize = 0,
+
+    fn now(io: std.Io) i128 {
+        return std.Io.Timestamp.now(io, .real).nanoseconds;
+    }
+
+    fn put(a: std.mem.Allocator, obj: *std.json.ObjectMap, key: []const u8, value: []const u8) !void {
+        try obj.put(a, key, .{ .string = value });
+    }
+
+    fn write(self: *Progress) !void {
+        const ns = now(self.io);
+        self.last_ns = ns;
+        const elapsed_ns = @max(ns - self.started_ns, 0);
+        var eta_ns: i128 = 0;
+        if (self.total > self.processed and self.processed > 0) {
+            eta_ns = @divTrunc(elapsed_ns, @as(i128, @intCast(self.processed))) * @as(i128, @intCast(self.total - self.processed));
+        }
+        var root = std.json.ObjectMap.empty;
+        try put(self.a, &root, "phase", self.phase);
+        try put(self.a, &root, "updated_at", try std.fmt.allocPrint(self.a, "{d}", .{ns}));
+        try root.put(self.a, "cadence_seconds", .{ .integer = 10 });
+        try root.put(self.a, "total", .{ .integer = @intCast(self.total) });
+        try root.put(self.a, "processed", .{ .integer = @intCast(self.processed) });
+        try root.put(self.a, "exported", .{ .integer = @intCast(self.exported) });
+        try root.put(self.a, "skipped", .{ .integer = @intCast(self.skipped) });
+        try root.put(self.a, "failed", .{ .integer = @intCast(self.failed) });
+        try root.put(self.a, "attachments", .{ .integer = @intCast(self.attachments) });
+        try root.put(self.a, "titled", .{ .integer = @intCast(self.titled) });
+        try root.put(self.a, "noise_filtered", .{ .integer = @intCast(self.noise_filtered) });
+        try root.put(self.a, "collapsed", .{ .integer = @intCast(self.collapsed) });
+        try root.put(self.a, "merged", .{ .integer = @intCast(self.merged) });
+        try root.put(self.a, "duplicates", .{ .integer = @intCast(self.duplicates) });
+        try root.put(self.a, "conflicts", .{ .integer = @intCast(self.conflicts) });
+        try root.put(self.a, "elapsed_seconds", .{ .float = @as(f64, @floatFromInt(elapsed_ns)) / @as(f64, std.time.ns_per_s) });
+        try root.put(self.a, "eta_seconds", .{ .float = @as(f64, @floatFromInt(eta_ns)) / @as(f64, std.time.ns_per_s) });
+        const value: std.json.Value = .{ .object = root };
+        const bytes = try std.json.Stringify.valueAlloc(self.a, value, .{ .whitespace = .indent_2 });
+        const path = try std.fs.path.join(self.a, &.{ self.output, "state.json" });
+        try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = path, .data = bytes });
+    }
+
+    fn maybe(self: *Progress) !void {
+        if (now(self.io) - self.last_ns >= self.cadence_ns) try self.write();
+    }
+};
 
 fn capture(a: std.mem.Allocator, io: std.Io, argv: []const []const u8) ![]u8 {
     var child = std.process.spawn(io, .{ .argv = argv, .stdout = .pipe, .stderr = .ignore }) catch return error.TitleGeneratorUnavailable;
@@ -77,11 +144,29 @@ fn poorTitle(title: []const u8) bool {
     return false;
 }
 
-fn generateTitle(a: std.mem.Allocator, io: std.Io, cache: *std.StringHashMap([]const u8), session: model.Session) !?[]const u8 {
+fn generateTitle(a: std.mem.Allocator, io: std.Io, cache: *std.StringHashMap([]const u8), budget: *usize, session: model.Session) !?[]const u8 {
     if (!poorTitle(session.title)) return null;
     if (cache.get(session.id)) |cached| return cached;
     const initial = if (session.messages.len > 0) session.messages[0].content else "";
     if (initial.len == 0) return null;
+    // Generic harness-generated titles can be replaced from the opening line
+    // without spending an fm call.
+    if (std.mem.startsWith(u8, session.title, "New session -") or std.mem.eql(u8, session.title, "Untitled session")) {
+        const line_end = std.mem.indexOfScalar(u8, initial, '\n') orelse initial.len;
+        const line = std.mem.trim(u8, initial[0..line_end], " \t#*-_\">");
+        if (line.len > 0) {
+            const title = try model.humanTitle(a, line[0..@min(line.len, 70)]);
+            try cache.put(try a.dupe(u8, session.id), title);
+            return title;
+        }
+    }
+    if (budget.* == 0) {
+        const line_end = std.mem.indexOfScalar(u8, initial, '\n') orelse initial.len;
+        const title = try model.humanTitle(a, initial[0..@min(line_end, 70)]);
+        try cache.put(try a.dupe(u8, session.id), title);
+        return title;
+    }
+    budget.* -= 1;
     const snippet = initial[0..@min(initial.len, 600)];
     const prompt = try std.fmt.allocPrint(a, "Summarise the following into a single-line title, compatible with APFS filesystem:\n\n{s}", .{snippet});
     const raw = capture(a, io, &.{ "fm", "respond", "--no-stream", "--greedy", prompt }) catch return null;
@@ -122,7 +207,9 @@ fn mainInner(init: std.process.Init) !u8 {
     var want_kagi = false;
     var import_archives = false;
     var title_generation = true;
+    var title_budget: usize = 100;
     var include_noise = false;
+    var purge = false;
     var archive_paths: std.ArrayList([]const u8) = .empty;
     var share_ids: std.ArrayList([]const u8) = .empty;
     var args = std.process.Args.Iterator.initAllocator(init.minimal.args, a) catch return 1;
@@ -144,6 +231,10 @@ fn mainInner(init: std.process.Init) !u8 {
             import_archives = true;
         } else if (std.mem.eql(u8, arg, "--no-title-generation")) {
             title_generation = false;
+        } else if (std.mem.startsWith(u8, arg, "--title-budget=")) {
+            title_budget = std.fmt.parseInt(usize, arg["--title-budget=".len..], 10) catch 100;
+        } else if (std.mem.eql(u8, arg, "--purge")) {
+            purge = true;
         } else if (std.mem.eql(u8, arg, "--include-noise")) {
             include_noise = true;
         } else if (std.mem.eql(u8, arg, "--dry-run")) {
@@ -168,6 +259,9 @@ fn mainInner(init: std.process.Init) !u8 {
         return 1;
     };
     if (output.len == 0) output = try std.fs.path.join(a, &.{ home, "Documents/AI" });
+    try std.Io.Dir.cwd().createDirPath(io, output);
+    var progress = Progress{ .a = a, .io = io, .output = output, .started_ns = Progress.now(io), .last_ns = Progress.now(io) };
+    try progress.write();
 
     var sessions: std.ArrayList(model.Session) = .empty;
     var stats = readers.Stats{};
@@ -204,6 +298,11 @@ fn mainInner(init: std.process.Init) !u8 {
         };
     }
 
+    progress.phase = "discovered";
+    progress.total = sessions.items.len;
+    progress.processed = sessions.items.len;
+    try progress.write();
+
     var noise_filtered: usize = 0;
     if (!include_noise) {
         var i: usize = sessions.items.len;
@@ -227,6 +326,15 @@ fn mainInner(init: std.process.Init) !u8 {
         };
     }
     report = try dedupe.process(a, &sessions);
+    progress.phase = "consolidated";
+    progress.total = sessions.items.len;
+    progress.processed = sessions.items.len;
+    progress.noise_filtered = noise_filtered;
+    progress.collapsed = report.collapsed;
+    progress.merged = report.merged;
+    progress.duplicates = report.duplicates.len;
+    progress.conflicts = report.conflicts.len;
+    try progress.write();
 
     const archives_root = try std.fs.path.join(a, &.{ output, "archives" });
     if (!dry_run) try std.Io.Dir.cwd().createDirPath(io, archives_root);
@@ -243,12 +351,16 @@ fn mainInner(init: std.process.Init) !u8 {
         }
     } else |_| {}
     var titled: usize = 0;
+    var budget = title_budget;
     if (title_generation) {
+        progress.phase = "titles";
         for (sessions.items) |*session| {
-            if (try generateTitle(a, io, &title_cache, session.*)) |title| {
+            if (try generateTitle(a, io, &title_cache, &budget, session.*)) |title| {
                 session.title = title;
                 titled += 1;
             }
+            progress.titled = titled;
+            try progress.maybe();
         }
     }
     if (!dry_run) {
@@ -261,13 +373,23 @@ fn mainInner(init: std.process.Init) !u8 {
         try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = cache_path, .data = cache_out.items });
     }
 
-    var writer = if (dry_run) null else try render.Writer.init(a, io, output);
+    var writer = if (dry_run) null else try render.Writer.init(a, io, output, purge);
+    progress.phase = "writing";
+    progress.total = sessions.items.len;
+    progress.processed = 0;
     for (sessions.items) |session| {
         if (writer) |*w| {
             try w.writeSession(session);
+            progress.exported = w.written;
+            progress.attachments = w.attachment_count;
         }
+        progress.processed += 1;
+        try progress.maybe();
     }
     if (writer != null) try dedupe.writeReports(a, io, output, report);
+    progress.phase = "done";
+    progress.processed = sessions.items.len;
+    try progress.write();
 
     const summary = try std.fmt.allocPrint(a,
         "scanned: {d} sessions · noise filtered: {d} · titled: {d} · exported: {d} · skipped: {d} · failed: {d} · attachments: {d} · collapsed: {d} · merged: {d} · cross-harness duplicates: {d} · conflicts: {d}\noutput: {s}\n",
