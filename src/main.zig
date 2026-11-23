@@ -90,21 +90,28 @@ fn capture(a: std.mem.Allocator, io: std.Io, argv: []const []const u8) ![]u8 {
     return out.toOwnedSlice(a);
 }
 
+fn isGenericTitle(a: std.mem.Allocator, title: []const u8) bool {
+    const lowered = std.ascii.allocLowerString(a, std.mem.trim(u8, title, " \t-")) catch return false;
+    const generic = [_][]const u8{ "thread", "new chat", "new session", "untitled", "chat", "conversation", "session" };
+    for (generic) |word| if (std.mem.eql(u8, lowered, word)) return true;
+    return std.mem.startsWith(u8, lowered, "new session -");
+}
+
 fn poorTitle(title: []const u8) bool {
     if (title.len > 55) return true;
     if (std.mem.indexOf(u8, title, "...") != null or std.mem.indexOf(u8, title, "…") != null) return true;
-    if (std.mem.startsWith(u8, title, "New session -")) return true;
     return false;
 }
 
 fn generateTitle(a: std.mem.Allocator, io: std.Io, cache: *std.StringHashMap([]const u8), budget: *usize, session: model.Session) !?[]const u8 {
-    if (!poorTitle(session.title)) return null;
+    const generic = isGenericTitle(a, session.title);
+    if (!generic and !poorTitle(session.title)) return null;
     if (cache.get(session.id)) |cached| return cached;
     const initial = if (session.messages.len > 0) session.messages[0].content else "";
     if (initial.len == 0) return null;
     // Generic harness-generated titles can be replaced from the opening line
     // without spending an fm call.
-    if (std.mem.startsWith(u8, session.title, "New session -") or std.mem.eql(u8, session.title, "Untitled session")) {
+    if (generic) {
         const line_end = std.mem.indexOfScalar(u8, initial, '\n') orelse initial.len;
         const line = std.mem.trim(u8, initial[0..line_end], " \t#*-_\">");
         if (line.len > 0) {
