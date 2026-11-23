@@ -335,13 +335,29 @@ pub fn process(a: std.mem.Allocator, sessions: *std.ArrayList(Session)) !Result 
                 var copy = s2.harness;
                 var confidence: []const u8 = "low";
                 var reason: []const u8 = "no provenance; earlier timestamp assumed original";
-                if ((std.mem.eql(u8, s1.harness, "typingmind") and std.mem.eql(u8, s2.harness, "anythingllm")) or
-                    (std.mem.eql(u8, s2.harness, "typingmind") and std.mem.eql(u8, s1.harness, "anythingllm")))
+                const ha = s1.harness;
+                const hb = s2.harness;
+                if ((std.mem.eql(u8, ha, "typingmind") and std.mem.eql(u8, hb, "anythingllm")) or
+                    (std.mem.eql(u8, hb, "typingmind") and std.mem.eql(u8, ha, "anythingllm")))
                 {
                     original = "typingmind";
                     copy = "anythingllm";
                     confidence = "high";
                     reason = "Dorothy ai-sync imported TypingMind exports into AnythingLLM workspaces";
+                } else if ((std.mem.eql(u8, ha, "chatgpt") and std.mem.eql(u8, hb, "typingmind")) or
+                    (std.mem.eql(u8, hb, "chatgpt") and std.mem.eql(u8, ha, "typingmind")))
+                {
+                    original = "chatgpt";
+                    copy = "typingmind";
+                    confidence = "high";
+                    reason = "ChatGPT export was imported into TypingMind; treat bogus 1970 TypingMind timestamps as non-evidence";
+                } else if ((std.mem.eql(u8, ha, "chatgpt") and std.mem.eql(u8, hb, "anythingllm")) or
+                    (std.mem.eql(u8, hb, "chatgpt") and std.mem.eql(u8, ha, "anythingllm")))
+                {
+                    original = "chatgpt";
+                    copy = "anythingllm";
+                    confidence = "high";
+                    reason = "ChatGPT to TypingMind to AnythingLLM import chain";
                 } else if (std.mem.order(u8, s1.stamp, s2.stamp) == .gt) {
                     original = s2.harness;
                     copy = s1.harness;
